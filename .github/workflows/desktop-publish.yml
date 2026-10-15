@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 10
     environment: desktop-release
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Reset and (re)create the release in a single job before any platform
       # builds. Doing this here instead of per-job avoids the concurrent-delete
@@ -71,7 +71,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
 
