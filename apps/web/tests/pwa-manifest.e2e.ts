@@ -51,7 +51,7 @@ it('ships install metadata with the built web application', async () => {
   expect(index).toContain('<link rel="manifest" href="./manifest.webmanifest" />')
   expect(index).toContain('<link rel="apple-touch-icon" href="./apple-touch-icon.png" />')
   expect(index).toContain('<meta name="mobile-web-app-capable" content="yes" />')
-  expect(index).toContain('<meta name="apple-mobile-web-app-title" content="DSH" />')
+  expect(index).toContain('<meta name="apple-mobile-web-app-title" content="喵工作台" />')
   // No `theme-color` here: `ThemePresenter` owns the single metadata node and
   // follows the resolved in-application theme, which a static media query
   // cannot. The manifest's `theme_color` covers the surrounding chrome before
@@ -115,9 +115,16 @@ it('ships fixed-color favicons selected by document media queries', async () => 
   const light = await readFile(join(DIST_ROOT, 'favicon.svg'), 'utf8')
   const dark = await readFile(join(DIST_ROOT, 'favicon-dark.svg'), 'utf8')
   expect(light).not.toContain('<style>')
-  expect(light).toContain('fill="#000"')
-  expect(dark).toContain('fill="#fff"')
-  expect(dark.replace('fill="#fff"', 'fill="#000"')).toBe(light)
+  // The mark is a raster PNG embedded in an SVG shell: one fixed ink per file,
+  // black for the light scheme and white for the dark scheme, differing only
+  // by that payload.
+  const payload = /data:image\/png;base64,([A-Za-z0-9+/=]+)/
+  const lightInk = light.match(payload)?.[1]
+  const darkInk = dark.match(payload)?.[1]
+  expect(lightInk, 'favicon.svg embeds a PNG mark').toBeTruthy()
+  expect(darkInk, 'favicon-dark.svg embeds a PNG mark').toBeTruthy()
+  expect(darkInk).not.toBe(lightInk)
+  expect(dark.replace(darkInk!, lightInk!)).toBe(light)
 })
 
 it('preserves fractional coverage along the Apple icon curves', async () => {
