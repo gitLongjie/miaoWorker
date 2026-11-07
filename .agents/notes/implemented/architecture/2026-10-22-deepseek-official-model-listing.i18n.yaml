@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-10-22-deepseek-official-model-listing.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-10-22-deepseek-official-model-listing.md
+/agent-note-the-api-key-route-no-longer-follows-the-official-model-listing:
+  en: 2c7782bf72466112
+  zh: 5b296132274428a9
+/agent-note-the-api-key-route-no-longer-follows-the-official-model-listing/problem:
+  en: 51a513e6134e6ad9
+  zh: e0b19412c9b88e24
+/agent-note-the-api-key-route-no-longer-follows-the-official-model-listing/decision:
+  en: 06d6383892d60f3c
+  zh: 9c93212ebfd74f3c
+/agent-note-the-api-key-route-no-longer-follows-the-official-model-listing/alternatives-considered:
+  en: 51303da646fd65b2
+  zh: 6b028b20327bf1e4
+/agent-note-the-api-key-route-no-longer-follows-the-official-model-listing/consequences:
+  en: 5bbe695ba5a51344
+  zh: 5430c5f98b39e8c1

@@ -1,0 +1,25 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "composite": true
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../../../vendor/cordis"
+    },
+    {
+      "path": "../ssh"
+    },
+    {
+      "path": "../../subprocess/subprocess-local"
+    },
+    {
+      "path": "../../ptc-runtime/ptc-runtime-node"
+    }
+  ]
+}

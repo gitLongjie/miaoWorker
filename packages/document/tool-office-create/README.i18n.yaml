@@ -1,0 +1,37 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/document/tool-office-create/README.md
+/:
+  en: c30aa7b9b8ef442c
+  zh: 77ef1c76f7993efd
+/deepseek-ai-dsh-tool-office-create:
+  en: d5c563545c6221fc
+  zh: a3a48ede2e5c662a
+/deepseek-ai-dsh-tool-office-create/overview:
+  en: c731146147ce7560
+  zh: 96b23eafb5b9493c
+/deepseek-ai-dsh-tool-office-create/use-this-package:
+  en: cfa849eb61907307
+  zh: 13ab255c22934bcd
+/deepseek-ai-dsh-tool-office-create/understand-the-implementation:
+  en: f902cc198f501583
+  zh: 856f9c54df687f0c
+/deepseek-ai-dsh-tool-office-create/model-experience:
+  en: 215e7ba838619b7b
+  zh: a311da3843709f90
+/deepseek-ai-dsh-tool-office-create/model-experience/request-context-and-condition:
+  en: cd8530c72534ee6b
+  zh: 16dbf6046e7e51fd
+/deepseek-ai-dsh-tool-office-create/model-experience/request-context-and-condition/what-the-model-sees:
+  en: 6512c366d6720c03
+  zh: e00c7217fa9a887f
+/deepseek-ai-dsh-tool-office-create/model-experience/request-context-and-condition/token-effect:
+  en: 6a826f78d7686101
+  zh: 2a5a5996419b932f
+/deepseek-ai-dsh-tool-office-create/model-experience/request-context-and-condition/kv-cache-effect:
+  en: a11d8f06bf1ccbe3
+  zh: f46f5a0c81a2a869
+/deepseek-ai-dsh-tool-office-create/known-limitations-and-deferred-work:
+  en: 7c48f13ca5d57d74
+  zh: 6f8dacbdff3838f5

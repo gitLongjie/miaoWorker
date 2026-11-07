@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
+import { apply as applyMenus, inject as injectMenus } from '@deepseek-ai/dsh-client-ui-context-menu/client'
 /** Conversation assembly acceptance independent of Tool presentation. */
+import './control-row-dom.ts'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
@@ -7,12 +10,13 @@ import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import type { ISession } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import {
-  RemoteError, SlotTestRuntime, usePinnedBrowserLanguages, stubSettingsScope,
+  RemoteError, SlotTestRuntime, usePinnedBrowserLanguages, stubConfigForm,
 } from '@deepseek-ai/dsh-client-test-runtime'
 import { InputHub } from '../src/client/input/hub.ts'
 import { apply, inject, type EmptyWorkspaceOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
+import { apply as applyExpert, inject as injectExpert } from '../../ui-expert/src/client/index.ts'
 
 // jsdom implements no Range geometry (Lexical's scroll-into-view measures the
 // caret with one once the surface is genuinely contenteditable).
@@ -22,6 +26,7 @@ Range.prototype.getBoundingClientRect = () => ({
 
 
 usePinnedBrowserLanguages('zh-CN')
+
 
 const SID = 's1' as SessionId
 
@@ -50,6 +55,23 @@ const LAYOUT_CHILDREN = {
   'main': { kind: 'keyed', scope: 'root' },
 } as const
 
+function provideWorkspaceNavigation(runtime: SlotTestRuntime): (id: SessionId) => void {
+  let mainReference: ReturnType<typeof runtime.sessions.retain> | undefined
+  const openSession = (id: SessionId): void => {
+    const next = runtime.sessions.retain(id, { source: 'mainView' })
+    mainReference?.release()
+    mainReference = next
+  }
+  runtime.ctx.provide('uiWorkspace', {
+    openWorkspace: vi.fn(async (_workspaceId: WorkspaceId, beforeOpen: (id: SessionId) => void) => {
+      beforeOpen(SID)
+      openSession(SID)
+    }),
+    openSession,
+  } as never)
+  return openSession
+}
+
 function WorkspaceProbe({ open }: EmptyWorkspaceOwnerProps) {
   const [count, setCount] = useState(0)
   return (
@@ -59,19 +81,15 @@ function WorkspaceProbe({ open }: EmptyWorkspaceOwnerProps) {
   )
 }
 
-async function bench(opts?: { blank?: boolean }) {
+async function bench(opts?: { blank?: boolean; expert?: boolean }) {
   const runtime = await SlotTestRuntime.create()
-  runtime.ctx.provide('uiWorkspace', {
-    openWorkspace: vi.fn(async (_workspaceId: WorkspaceId, beforeOpen: (id: SessionId) => void) => {
-      beforeOpen(SID)
-      runtime.sessions.open(SID)
-    }),
-    openSession: (id: SessionId) => { runtime.sessions.open(id) },
-  } as never)
-  runtime.ctx.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
+  const openSession = provideWorkspaceNavigation(runtime)
+  runtime.ctx.provide('configForms', { developerTools: { enabled: createSnapshotStore(true) }, get: () => stubConfigForm().scope } as never)
   const locale = new LocaleRuntime(runtime.ctx)
   runtime.ctx.provide('locale', locale)
   runtime.slots.installLocale(locale)
+  runtime.ctx.provide('shortcuts', { catalog: createSnapshotStore([]) })
+  await runtime.mount({ inject: [...injectMenus], apply: applyMenus })
   await runtime.sessions.add({
     id: SID,
     summary: { title: 'S', displayTitle: 'S', cwd: '/proj' },
@@ -81,25 +99,51 @@ async function bench(opts?: { blank?: boolean }) {
       prompt: vi.fn<ISession['prompt']>(async () => ({ ok: true, value: { accepted: true } })),
     },
   })
+  openSession(SID)
   await runtime.root.declare(LAYOUT_CHILDREN, AppRoot)
+  if (opts?.expert === true) {
+    runtime.remote.provideNamespaces({ agentPresets: {
+      list: async () => ({ ok: true, value: { presets: [
+        { id: 'writer', name: '写作专家', category: '写作' },
+      ] } }),
+    } })
+    runtime.ctx.provide('uiAgentPreset', { stageNextSessionPreset: () => true } as never)
+    runtime.ctx.provide('layout', {
+      selectPanel: () => {}, onPanelSelection: () => () => {},
+    } as never)
+    await runtime.mount({ inject: [...injectExpert], apply: applyExpert })
+  }
   await runtime.mount({ inject: [...inject], apply })
   return runtime
 }
 
 describe('resident composer', () => {
+  it('renders the registered expert browser through the main content Factory and restores the Session', async () => {
+    const runtime = await bench({ expert: true })
+    try {
+      const view = runtime.renderRoot()
+      expect(view.getByRole('textbox')).toBeTruthy()
+      await act(async () => { runtime.ctx.uiExpert.openPage() })
+      expect(await view.findByRole('heading', { name: '专家' })).toBeTruthy()
+      expect(await view.findByRole('heading', { name: '写作专家' })).toBeTruthy()
+      expect(view.queryByRole('textbox', { name: /发消息/u })).toBeNull()
+      await act(async () => { runtime.ctx.uiExpert.closePage() })
+      expect(view.queryByRole('heading', { name: '专家' })).toBeNull()
+      expect(view.getByRole('textbox')).toBeTruthy()
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('renders the locked view state while no session exists at all', async () => {
     const runtime = await SlotTestRuntime.create()
-    runtime.ctx.provide('uiWorkspace', {
-      openWorkspace: vi.fn(async (_workspaceId: WorkspaceId, beforeOpen: (id: SessionId) => void) => {
-        beforeOpen(SID)
-        runtime.sessions.open(SID)
-      }),
-      openSession: (id: SessionId) => { runtime.sessions.open(id) },
-    } as never)
-    runtime.ctx.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
+    provideWorkspaceNavigation(runtime)
+    runtime.ctx.provide('configForms', { developerTools: { enabled: createSnapshotStore(true) }, get: () => stubConfigForm().scope } as never)
     const locale = new LocaleRuntime(runtime.ctx)
     runtime.ctx.provide('locale', locale)
     runtime.slots.installLocale(locale)
+    runtime.ctx.provide('shortcuts', { catalog: createSnapshotStore([]) })
+    await runtime.mount({ inject: [...injectMenus], apply: applyMenus })
     await runtime.root.declare(LAYOUT_CHILDREN, AppRoot)
     await runtime.mount({ inject: [...inject], apply })
     runtime.slots.register({ name: 'conversation.hero.workspace' }, WorkspaceProbe)
@@ -122,17 +166,13 @@ describe('resident composer', () => {
 
   it('keeps the complete Hero tree mounted when the first Workspace session appears', async () => {
     const runtime = await SlotTestRuntime.create()
-    runtime.ctx.provide('uiWorkspace', {
-      openWorkspace: vi.fn(async (_workspaceId: WorkspaceId, beforeOpen: (id: SessionId) => void) => {
-        beforeOpen(SID)
-        runtime.sessions.open(SID)
-      }),
-      openSession: (id: SessionId) => { runtime.sessions.open(id) },
-    } as never)
-    runtime.ctx.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
+    const openSession = provideWorkspaceNavigation(runtime)
+    runtime.ctx.provide('configForms', { developerTools: { enabled: createSnapshotStore(true) }, get: () => stubConfigForm().scope } as never)
     const locale = new LocaleRuntime(runtime.ctx)
     runtime.ctx.provide('locale', locale)
     runtime.slots.installLocale(locale)
+    runtime.ctx.provide('shortcuts', { catalog: createSnapshotStore([]) })
+    await runtime.mount({ inject: [...injectMenus], apply: applyMenus })
     await runtime.workspaces.update((draft) => {
       draft.items = [{ workspaceId: 'w1', title: 'Proj', path: '/proj', sessionIds: [SID] }] as never
     })
@@ -159,6 +199,8 @@ describe('resident composer', () => {
       summary: { title: 'S', displayTitle: 'S', cwd: '/proj', blank: true },
       snapshot: { blank: true },
     })
+    openSession(SID)
+    await runtime.flush()
 
     expect(view.container.querySelector('[data-phase="hero"]')).toBe(root)
     expect(view.container.querySelector('[data-conversation-scroll]')).toBe(scrollBody)
@@ -193,17 +235,13 @@ describe('resident composer', () => {
 describe('prompt rejection through the assembled composer', () => {
   it('renders the promptError alert strip and keeps the draft in the machine', async () => {
     const runtime = await SlotTestRuntime.create()
-    runtime.ctx.provide('uiWorkspace', {
-      openWorkspace: vi.fn(async (_workspaceId: WorkspaceId, beforeOpen: (id: SessionId) => void) => {
-        beforeOpen(SID)
-        runtime.sessions.open(SID)
-      }),
-      openSession: (id: SessionId) => { runtime.sessions.open(id) },
-    } as never)
-    runtime.ctx.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
+    const openSession = provideWorkspaceNavigation(runtime)
+    runtime.ctx.provide('configForms', { developerTools: { enabled: createSnapshotStore(true) }, get: () => stubConfigForm().scope } as never)
     const locale = new LocaleRuntime(runtime.ctx)
     runtime.ctx.provide('locale', locale)
     runtime.slots.installLocale(locale)
+    runtime.ctx.provide('shortcuts', { catalog: createSnapshotStore([]) })
+    await runtime.mount({ inject: [...injectMenus], apply: applyMenus })
     const prompt = vi.fn<ISession['prompt']>(async () => ({
       ok: false,
       error: new RemoteError('session/agent-busy', 'prompt rejected before acceptance', { reason: 'busy' }),
@@ -213,6 +251,7 @@ describe('prompt rejection through the assembled composer', () => {
       summary: { title: 'S', displayTitle: 'S', cwd: '/proj' },
       session: { prompt, loadOlder: vi.fn<ISession['loadOlder']>() },
     })
+    openSession(SID)
     await runtime.root.declare(LAYOUT_CHILDREN, AppRoot)
     await runtime.mount({ inject: [...inject], apply })
     const view = runtime.renderRoot()
@@ -246,13 +285,13 @@ describe('title projection across assembled surfaces', () => {
     const runtime = await bench()
     const view = runtime.renderRoot()
     const hierarchy = view.getByRole('navigation', { name: '会话层级' })
-    expect(within(hierarchy).getByRole('button', { name: 'S' }).hasAttribute('disabled')).toBe(true)
+    expect(within(hierarchy).getByText('S').tagName).toBe('SPAN')
 
     await runtime.sessions.updateSummary(SID, { displayTitle: '修订标题', title: '修订标题' })
     await waitFor(() => {
-      expect(within(hierarchy).getByRole('button', { name: '修订标题' }).hasAttribute('disabled')).toBe(true)
+      expect(within(hierarchy).getByText('修订标题').tagName).toBe('SPAN')
     })
-    expect(within(hierarchy).queryByRole('button', { name: 'S' })).toBeNull()
+    expect(within(hierarchy).queryByText('S')).toBeNull()
     await runtime.dispose()
   })
 })

@@ -51,6 +51,13 @@ export interface LoginSession {
  */
 export const GATEWAY_CREDENTIAL_REF = 'DEEPAGENS_API_KEY'
 
+/**
+ * Default `llm-deepagens.imageModel` when settings omit one and the gateway
+ * listing tags no image-generation model. Matches the shipped base composition
+ * so `generate_image` works after sign-in without a Models edit.
+ */
+export const DEFAULT_GATEWAY_IMAGE_MODEL = 'gpt-image-2'
+
 /** The launch-time login record: the pair a refused key is replaced from, plus the last session facts. */
 export interface StoredLogin {
   /** Account identifier as typed at the sign-in that stored it. */
@@ -110,6 +117,19 @@ function writeStoredLogin(record: StoredLogin | null): void {
   }
 }
 
+/** One gateway token-quota read outcome as the account section renders it. */
+export type GatewayBalance =
+  /** A read is in flight and no value is available yet. */
+  | { status: 'loading' }
+  /**
+   * Token counts from the gateway, read at `checkedAt`.
+   * `unlimited` means the key has no remaining cap; `remainingTokens` is then 0
+   * and the page shows the unlimited label instead of that count.
+   */
+  | { status: 'ready'; usedTokens: number; remainingTokens: number; unlimited: boolean; checkedAt: number }
+  /** The last read failed and no earlier value survives. */
+  | { status: 'unavailable' }
+
 /** State rendered by the login gate. */
 export interface LoginState {
   /** The boot-time session restore is in flight; the gate renders only its backdrop. */
@@ -120,6 +140,8 @@ export interface LoginState {
   busy: boolean
   /** Failure text from the last sign-in attempt: a server message or a locale key. */
   error: string | null
+  /** Gateway balance for the signed-in account; null while signed out. */
+  balance: GatewayBalance | null
 }
 
 /** Host credential writes the store delegates after a session transition. */
@@ -143,7 +165,7 @@ export interface LoginApi {
 export class LoginStore {
   /** uSES-safe state source shared by the registered gate. */
   readonly store: SnapshotStore<LoginState> = createSnapshotStore<LoginState>({
-    restoring: false, session: null, busy: false, error: null,
+    restoring: false, session: null, busy: false, error: null, balance: null,
   })
 
   /**
@@ -166,11 +188,74 @@ export class LoginStore {
   }
 
   /**
+   * Re-read the signed-in account's gateway balance. A launch-time sign-in and
+   * every session adoption already schedule one read; the settings account
+   * section calls this again on each entry so the shown number tracks top-ups.
+   * A failed re-read keeps the last good value instead of downgrading it.
+   */
+  async refreshBalance(): Promise<void> {
+    const session = this.store.getSnapshot().session
+    if (session === null) return
+    const hasValue = this.store.getSnapshot().balance?.status === 'ready'
+    if (!hasValue) {
+      this.store.update((state) => {
+        state.balance = { status: 'loading' }
+      })
+    }
+    try {
+      const balance = await this.readGatewayBalance(session.apiKey)
+      // A sign-out (or a next sign-in) during the reads invalidates this result.
+      if (this.store.getSnapshot().session !== session) return
+      this.store.update((state) => {
+        state.balance = balance
+      })
+    } catch (error: unknown) {
+      console.warn(`[ui-login] gateway balance read failed: ${error instanceof Error ? error.message : String(error)}`)
+      if (this.store.getSnapshot().session !== session) return
+      if (hasValue) return
+      this.store.update((state) => {
+        state.balance = { status: 'unavailable' }
+      })
+    }
+  }
+
+  /**
+   * Read the signed-in key's token quota from the gateway. Wire contract
+   * (new-api lineage, `GET /api/usage/token/`, the Deepagens Claw gateway).
+   * The trailing slash is required: the bare path answers 301 without a CORS
+   * header, and the desktop origin then rejects the redirect.
+   * `{code: true, data: {total_used, total_available, unlimited_quota}}`.
+   * `total_used` and `total_available` are token counts, not display dollars.
+   * `unlimited_quota` true means the key has no remaining cap.
+   * @param apiKey - the signed-in session's key.
+   * @returns the ready token-quota fact.
+   * @throws when the endpoint refuses, answers non-JSON, or omits a count.
+   */
+  private async readGatewayBalance(apiKey: string): Promise<GatewayBalance> {
+    const origin = this.baseUrl()
+    const response = await fetch(`${origin}/api/usage/token/`, { headers: { authorization: `Bearer ${apiKey}` } })
+    const raw = await response.text()
+    let body: unknown = null
+    try {
+      body = JSON.parse(raw)
+    } catch {
+      body = null
+    }
+    const usage = tokenUsageOf(body)
+    if (!response.ok || usage === null) {
+      throw new Error(`HTTP ${response.status}: ${replyExcerpt(raw)}`)
+    }
+    return { status: 'ready', ...usage, checkedAt: Date.now() }
+  }
+
+  /**
    * Fetch the token-scoped model list from the gateway, persist it into the
    * Deepagens provider settings (endpoint base plus catalog) so the selector
-   * and the Models page see the live gateway models as their own group, and
-   * point the default model at the first pulled model when the current
-   * default is not one they serve; an unchanged catalog is left alone.
+   * and the Models page see the live gateway models as their own group, keep
+   * `imageModel` on a gateway image-generation model (see `imageModelSeedOp`)
+   * so `generate_image` is usable without a Models-page edit, and point the
+   * default model at the first pulled chat model when the current default is
+   * not one they serve; an unchanged catalog and image model are left alone.
    * Failures — a refused read or an unreachable gateway — keep whatever is
    * already stored.
    * @param apiKey - the API key the sign-in just issued.
@@ -183,7 +268,12 @@ export class LoginStore {
     }
     const namespaces = described.value.namespaces
     const ns = namespaces.find(view => view.ns === 'llm-deepagens')
-    const stored = (ns?.value as { baseURL?: unknown; models?: unknown; followGatewayCatalog?: unknown } | undefined)
+    const stored = (ns?.value as {
+      baseURL?: unknown
+      models?: unknown
+      followGatewayCatalog?: unknown
+      imageModel?: unknown
+    } | undefined)
     // An explicit `false` hands the route to the user: the Models page's edits
     // to the endpoint and catalog are this deployment's own facts now, so a
     // sign-in must not re-point them at the gateway it happened to log into.
@@ -212,7 +302,10 @@ export class LoginStore {
     // a fabricated window would pin a fake fact on every silent endpoint —
     // absent capacities instead resolve at request time from the route's
     // defaultContextWindow and maxTokens, and the Models page shows its
-    // provider-default placeholder.
+    // provider-default placeholder. Input types follow the same rule: image
+    // is stored only when the listing declares it, otherwise the row stays
+    // text-only and the composer refuses image prompts. A row the listing tags
+    // as image generation is served from the images endpoint, not chat.
     let catalogModels: GatewayCatalogRow[] | undefined
     let modelsOp: Array<{ op: 'set'; path: string[]; value: GatewayCatalogRow[] }> = []
     if (discovered.ok) {
@@ -222,7 +315,8 @@ export class LoginStore {
         description: '',
         ...m.contextWindow === undefined ? {} : { contextWindow: m.contextWindow },
         ...m.maxTokens === undefined ? {} : { maxTokens: m.maxTokens },
-        inputModalities: ['text'],
+        inputModalities: catalogInputModalities(m.inputModalities),
+        ...m.imageGeneration === true ? { endpoint: 'image-generation' as const } : {},
       }))
       if (modelsEquivalent(stored?.models, catalogModels)) {
         console.warn(`[ui-login] gateway catalog unchanged (${catalogModels.length} models); keeping stored`)
@@ -230,19 +324,26 @@ export class LoginStore {
         modelsOp = [{ op: 'set', path: ['models'], value: catalogModels }]
       }
     }
-    const operations = [...baseURLOp, ...modelsOp]
+    const imageModelOp = imageModelSeedOp(
+      stored?.imageModel,
+      catalogModels?.filter(model => model.endpoint === 'image-generation').map(model => model.id),
+    )
+    const operations = [...baseURLOp, ...modelsOp, ...imageModelOp]
     if (operations.length > 0) {
       const written = await this.api.settings.mutate('llm-deepagens', operations, ns?.revision)
       if (!written.ok) {
         console.warn(`[ui-login] deepagens catalog write refused: ${written.error.message}`)
       } else if (modelsOp.length > 0) {
         console.warn(`[ui-login] refreshed deepagens catalog from gateway: ${catalogModels?.length ?? 0} models`)
+      } else if (imageModelOp.length > 0) {
+        console.warn(`[ui-login] seeded deepagens imageModel: ${imageModelOp[0]?.value}`)
       } else {
         console.warn(`[ui-login] re-pointed the deepagens endpoint at ${gatewayBase}; catalog kept`)
       }
     }
-    if (catalogModels !== undefined && catalogModels.length > 0) {
-      await this.adoptFirstGatewayModel(namespaces, catalogModels)
+    const chatModels = catalogModels?.filter(model => model.endpoint === undefined)
+    if (chatModels !== undefined && chatModels.length > 0) {
+      await this.adoptFirstGatewayModel(namespaces, chatModels)
     }
   }
 
@@ -366,6 +467,7 @@ export class LoginStore {
     this.store.update((state) => {
       state.session = session
     })
+    void this.refreshBalance()
   }
 
   /**
@@ -466,6 +568,7 @@ export class LoginStore {
       state.busy = false
       state.session = session
     })
+    void this.refreshBalance()
     return true
   }
 
@@ -476,6 +579,7 @@ export class LoginStore {
     this.store.update((state) => {
       state.session = null
       state.error = null
+      state.balance = null
     })
   }
 }
@@ -487,6 +591,43 @@ export class LoginStore {
  * @param raw - the unprocessed response body text.
  * @returns the trimmed body, truncated past 2000 characters.
  */
+/** Token counts taken from a `GET /api/usage/token` success body. */
+interface TokenUsageCounts {
+  /** Tokens already spent on this key. */
+  usedTokens: number
+  /** Tokens still available; 0 when `unlimited` is true. */
+  remainingTokens: number
+  /** The key has no remaining cap. */
+  unlimited: boolean
+}
+
+/**
+ * Read token counts from a token-usage body.
+ * @param body - the parsed JSON value, or null when the body was not JSON.
+ * @returns the counts, or null when the body omits a required count.
+ */
+function tokenUsageOf(body: unknown): TokenUsageCounts | null {
+  if (typeof body !== 'object' || body === null) return null
+  const record = body as Record<string, unknown>
+  if (record.code !== true || typeof record.data !== 'object' || record.data === null) return null
+  const data = record.data as Record<string, unknown>
+  const unlimited = data.unlimited_quota === true
+  const usedTokens = quotaCount(data.total_used)
+  const remainingTokens = unlimited ? 0 : quotaCount(data.total_available)
+  if (usedTokens === undefined || remainingTokens === undefined) return null
+  return { usedTokens, remainingTokens, unlimited }
+}
+
+/**
+ * Accept a non-negative finite quota count.
+ * @param value - one token-usage number field.
+ * @returns the rounded count, or undefined when the field is not a usable count.
+ */
+function quotaCount(value: unknown): number | undefined {
+  if (typeof value !== 'number' || value < 0) return undefined
+  return Math.round(value)
+}
+
 function replyExcerpt(raw: string): string {
   const trimmed = raw.trim()
   return trimmed.length <= 2000 ? trimmed : `${trimmed.slice(0, 2000)}...(truncated)`
@@ -511,7 +652,53 @@ type GatewayCatalogRow = {
   readonly description: string
   readonly contextWindow?: number
   readonly maxTokens?: number
-  readonly inputModalities: ['text']
+  readonly inputModalities: ('text' | 'image')[]
+  /** Present when the gateway tags the model as image generation. */
+  readonly endpoint?: 'image-generation'
+}
+
+/**
+ * Persist image input only when the gateway listing declares it.
+ * An undisclosed listing stays text-only. A declaration that names image
+ * without text still stores text, because the catalog editor rejects an
+ * image-only list.
+ * @param declared - modalities discovery read from the listing, when present.
+ * @returns the catalog row's input types.
+ */
+function catalogInputModalities(
+  declared: readonly string[] | undefined,
+): ('text' | 'image')[] {
+  if (declared?.includes('image') !== true) return ['text']
+  const ordered: ('text' | 'image')[] = []
+  for (const item of declared) {
+    if ((item === 'text' || item === 'image') && !ordered.includes(item)) ordered.push(item)
+  }
+  if (!ordered.includes('text')) ordered.unshift('text')
+  return ordered
+}
+
+/**
+ * Build the settings write that keeps `imageModel` on a model the gateway can
+ * generate images with. When the listing tags image-generation models, a stored
+ * id among them stays and any other value is replaced with the first tagged id.
+ * Without tagged models (or without a listing), a non-empty stored id stays and
+ * an absent one becomes {@link DEFAULT_GATEWAY_IMAGE_MODEL}.
+ * @param stored - the `imageModel` value currently in settings, when present.
+ * @param taggedIds - image-generation model ids in gateway order, when discovery succeeded.
+ * @returns zero or one `set` operation for `imageModel`.
+ */
+function imageModelSeedOp(
+  stored: unknown,
+  taggedIds: readonly string[] | undefined,
+): Array<{ op: 'set'; path: string[]; value: string }> {
+  const current = typeof stored === 'string' && stored.length > 0 ? stored : undefined
+  const [firstTagged] = taggedIds ?? []
+  if (firstTagged !== undefined) {
+    return current !== undefined && taggedIds?.includes(current) === true
+      ? []
+      : [{ op: 'set', path: ['imageModel'], value: firstTagged }]
+  }
+  return current !== undefined ? [] : [{ op: 'set', path: ['imageModel'], value: DEFAULT_GATEWAY_IMAGE_MODEL }]
 }
 
 /**

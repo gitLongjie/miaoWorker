@@ -9,11 +9,12 @@ import {
   readDesktopOemConfig,
   syncDesktopOemIcons,
 } from '../scripts/desktop-oem-config.mjs'
+import { DESKTOP_APP_USER_MODEL_ID, resolveAppUserModelId } from '../src/main/desktop/app-user-model-id.ts'
 
 const BUILDER_CONFIG = fileURLToPath(new URL('../electron-builder.yml', import.meta.url))
 const DEV_LAUNCHER = fileURLToPath(new URL('../scripts/dev.ts', import.meta.url))
 const DEPLOY_LAUNCHER = fileURLToPath(new URL('../scripts/deploy-app.mjs', import.meta.url))
-const RENDER_ENTRY = fileURLToPath(new URL('../src/render/entry.ts', import.meta.url))
+const MAIN_ENTRY = fileURLToPath(new URL('../src/main/index.ts', import.meta.url))
 const UPDATER = fileURLToPath(new URL('../src/main/updater.ts', import.meta.url))
 const DESKTOP_MANIFEST = fileURLToPath(new URL('../package.json', import.meta.url))
 const roots: string[] = []
@@ -26,9 +27,19 @@ describe('desktop builder identity', () => {
   const config = readFileSync(BUILDER_CONFIG, 'utf8')
 
   it('ships the product name used by the native shell', () => {
-    expect(config).toMatch(/^appId:\s*com\.meowwork\.app\s*$/m)
+    expect(config).toMatch(/^appId:\s*com\.deepagens\.app\s*$/m)
     expect(config).not.toMatch(/^productName:/m)
+    expect(config).toMatch(/^  shortcutName:\s*\$\{productName\}\s*$/m)
+    expect(config).toMatch(/^  uninstallDisplayName:\s*\$\{productName\}\s*$/m)
     expect(config).not.toContain('miaoWorks')
+  })
+
+  it('gives installed launches the electron-builder appId and checkout launches their own id', () => {
+    const appId = /^appId:\s*(\S+)\s*$/m.exec(config)?.[1]
+    expect(DESKTOP_APP_USER_MODEL_ID).toBe(appId)
+    expect(resolveAppUserModelId({})).toBe(appId)
+    expect(resolveAppUserModelId({ DSH_DESKTOP_DEV: '1' })).toBe(`${appId}.dev`)
+    expect(readFileSync(MAIN_ENTRY, 'utf8')).toContain('app.setAppUserModelId(resolveAppUserModelId())')
   })
 
   it('pins the application icon instead of Electron default artwork', () => {
@@ -39,22 +50,22 @@ describe('desktop builder identity', () => {
 
   it('gives Windows and macOS release assets stable architecture-specific names', () => {
     expect(config).toMatch(
-      /^nsis:\s*$[\s\S]*?^\s+artifactName:\s+miaoWorker-\$\{version\}-win-\$\{arch\}\.\$\{ext\}\s*$/m,
+      /^nsis:\s*$[\s\S]*?^\s+artifactName:\s+DeepWorker-\$\{version\}-win-\$\{arch\}\.\$\{ext\}\s*$/m,
     )
     expect(config).toMatch(
-      /^mac:\s*$[\s\S]*?^\s+artifactName:\s+miaoWorker-\$\{version\}-mac-\$\{arch\}\.\$\{ext\}\s*$/m,
+      /^mac:\s*$[\s\S]*?^\s+artifactName:\s+DeepWorker-\$\{version\}-mac-\$\{arch\}\.\$\{ext\}\s*$/m,
     )
     expect(config).toMatch(
-      /^linux:\s*$[\s\S]*?^\s+artifactName:\s+miaoWorker-\$\{version\}-linux-\$\{arch\}\.\$\{ext\}\s*$/m,
+      /^linux:\s*$[\s\S]*?^\s+artifactName:\s+DeepWorker-\$\{version\}-linux-\$\{arch\}\.\$\{ext\}\s*$/m,
     )
     expect(config).not.toContain('${productName}-${version}')
   })
 
-  it('installs per-machine under the stable ASCII miaoWorker directory', () => {
+  it('installs per-machine under the stable ASCII DeepWorker directory', () => {
     expect(config).toMatch(/^  perMachine: true\s*$/m)
     expect(config).toMatch(/^  include: build\/installer\.nsh\s*$/m)
     const installer = readFileSync(fileURLToPath(new URL('../build/installer.nsh', import.meta.url)), 'utf8')
-    expect(installer).toContain('StrCpy $INSTDIR "$PROGRAMFILES64\\miaoWorker"')
+    expect(installer).toContain('StrCpy $INSTDIR "$PROGRAMFILES64\\DeepWorker"')
   })
 
   it('brands the Windows development executable used by Task Manager', () => {
@@ -94,7 +105,7 @@ describe('desktop builder identity', () => {
       extends: 'electron-builder.yml',
       productName: 'miaoWorker',
       extraMetadata: {
-        name: 'miaoWorker',
+        name: 'DeepWorker',
         productName: 'miaoWorker',
         dsh: { updateUrl: 'https://updates.example.test/desktop' },
       },
@@ -118,7 +129,7 @@ describe('desktop builder identity', () => {
     })).toMatchObject({
       directories: { output: 'C:/local-update/feed' },
       extraMetadata: {
-        name: 'miaoWorker',
+        name: 'DeepWorker',
         productName: 'Worker',
         version: '1.2.4',
         dsh: { updateUrl: 'http://127.0.0.1:43119', localUpdateTest: true },
@@ -147,7 +158,7 @@ describe('desktop builder identity', () => {
       extends: 'electron-builder.yml',
       productName: 'miaoWorker',
       extraMetadata: {
-        name: 'miaoWorker',
+        name: 'DeepWorker',
         productName: 'miaoWorker',
         dsh: {},
       },
@@ -235,12 +246,6 @@ describe('desktop builder identity', () => {
       DSH_CLIENT_BRAND_ICON: 'https://cdn.acme.test/icon.ico',
     })).toThrow(/local/)
     expect(() => syncDesktopOemIcons(repoRoot, desktopRoot, {})).toThrow(/valid ICO/)
-  })
-
-  it('takes the custom title-bar mark from the OEM-projected document favicon', () => {
-    const entry = readFileSync(RENDER_ENTRY, 'utf8')
-    expect(entry).toContain("querySelector<HTMLLinkElement>('link[rel~=\"icon\"]')")
-    expect(entry).not.toContain("installTitleBar(document, ipc, './favicon.ico')")
   })
 
   it('configures electron-updater from the OEM update URL before checking', () => {

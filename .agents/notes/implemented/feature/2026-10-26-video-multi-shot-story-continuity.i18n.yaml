@@ -1,6 +1,19 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for 2026-10-26-video-multi-shot-story-continuity.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-10-26-video-multi-shot-story-continuity.md
-2026-10-26-video-multi-shot-story-continuity.md: 64668f9f06a9cf1223c20d7f31939778a49bcb2e
-2026-10-26-video-multi-shot-story-continuity.zh.md: 335903b3f33d80955116f59f5d377624760d857b
+/agent-note-multi-shot-story-continuity-uses-one-opening-frame:
+  en: 3d478b02066e8021
+  zh: c52c0ba605048eed
+/agent-note-multi-shot-story-continuity-uses-one-opening-frame/problem:
+  en: 103ec88035f40c7b
+  zh: 082036f14d4bf6da
+/agent-note-multi-shot-story-continuity-uses-one-opening-frame/decision:
+  en: d1a52a24d61b85de
+  zh: a9b988b021b5536f
+/agent-note-multi-shot-story-continuity-uses-one-opening-frame/alternatives-considered:
+  en: c81bedee51161e4d
+  zh: 700008d8096b6d58
+/agent-note-multi-shot-story-continuity-uses-one-opening-frame/consequences:
+  en: 0e39e660f53dd552
+  zh: 59359c55cc692563

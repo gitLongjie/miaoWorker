@@ -11,7 +11,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Type-only: pulls the ctx.remote merge into this program.
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import {
   CardForm, textField,
   type CardActions, type CardFieldSpec, type CardFieldState, type CardShell,
@@ -77,7 +77,7 @@ export class GeoAdminCardController {
    *   answers for the fixed password reference.
    */
   constructor(
-    scope: SettingsScope<GeoAdminSettings>,
+    scope: ConfigForm<GeoAdminSettings>,
     private readonly ctx: ClientContext,
   ) {
     this.form = new CardForm(
@@ -142,7 +142,8 @@ export class GeoAdminCardController {
   private async writePassword(value: string): Promise<boolean> {
     // A refusal surfaces through the re-read below: the Host is the only
     // authority on whether the credential now exists.
-    await this.ctx.remote.credentials.set(GEO_ADMIN_PASSWORD_REF, value)
+    const response = await this.ctx.remote.credentials.set(GEO_ADMIN_PASSWORD_REF, value)
+    if (!response.ok) return false
     await this.readCredential()
     return this.credential?.configured ?? false
   }

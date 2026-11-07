@@ -1,5 +1,5 @@
 ---
-description: "Sign-in plugin for the dsh web client: a full-page login takeover and a signed-in account row wired to the deployment's account server through the OEM config."
+description: "Sign-in plugin for the dsh web client: a full-page login takeover and a signed-in account launcher wired to the deployment's account server through the OEM config."
 kind: "package-reference"
 ---
 
@@ -13,18 +13,23 @@ This package registers the account sign-in flow against the deployment's account
 
 ## Table of Contents
 
-Two occupants install through declaration-aware `slots.inject()` calls, so activation order relative to ui-layout and ui-sidebar does not matter and teardown withdraws both:
+Three occupants install through declaration-aware `slots.inject()` calls, so activation order relative to ui-layout and ui-settings does not matter and teardown withdraws them:
 
 - `shell.overlay` — a full-page sign-in takeover (brand mark, username/password form with a show-password toggle, server messages shown verbatim). The backdrop re-enables pointer events because the overlay layer is click-through by design, and it respects a desktop shell's published top inset so the window title bar remains available. While the boot-time session restore is in flight it renders only the backdrop; it renders nothing once a session is signed in.
-- `sidebar.footer.action` — the signed-in account row: avatar (or its initial fallback), display name in wide mode, and a dropdown with the sign-out action.
+- `settings.launcher` — the signed-in account launcher, registered at `priority: -1` so it shadows the upstream `AccountMenu` in a composition carrying both: avatar (or its initial fallback) and the display name in wide mode open a dropdown with the sign-out action, and a gear beside them opens the settings panel through the seat's `openSettings`.
+- `settings.section` — the settings 账号与余额 page for the gateway session, registered under the upstream section's `id` (`account`) at `priority: -1`, so it shadows the upstream DeepSeek account page the same way the launcher is shadowed, and only while a gateway session is signed in. It renders the account identity and the used and remaining token counts (below); its 控制台 and 充值 links target the gateway origin's console.
 
 A successful sign-in (wire contract: `POST {username, password}` → `{success, message?, data: {display_name?, avatar?, api_key}}`) keeps the session in memory and stores the typed pair, the issued key, and the profile in `localStorage`, then writes `DEEPAGENS_API_KEY` through the existing `credentials.set` wire method — the same writable layer the Models settings page uses, under the gateway route's own reference. `DEEPSEEK_API_KEY` is deliberately untouched: it belongs to the DeepSeek route, and a launch-time sign-in that wrote it replaced the key a user stored there. The gateway endpoint needs no credential entry because the catalog sync writes it into the route's `llm-deepagens` settings section. A rejected write aborts the sign-in loudly. Sign-out unsets `DEEPAGENS_API_KEY` and drops the stored record, leaving every other stored credential in place.
+
+## Token quota
+
+The signed-in key's token quota is read from the new-api lineage token-usage endpoint with the session key as the bearer credential: `GET /api/usage/token/` answers `data.total_used` (tokens already spent) and `data.total_available` (tokens still available). Those counts are the gateway's token quota, not display dollars. `data.unlimited_quota` true means the key has no remaining cap, and the page shows that instead of a remaining count. A sign-in and every launch-time session adoption schedule one read; the gateway account section re-reads on each entry into the settings page. A failed re-read keeps the last good value instead of downgrading it, a failed first read offers a retry affordance, and a sign-out during in-flight reads drops the stale result.
 
 Every launch revalidates the stored key with one `GET /v1/models` read before the UI settles. An accepted key signs in and enters the app without the card, and without the `POST` the account server charges a login session for; the gateway catalog sync still runs on that key. A refused key (revoked, expired, short of quota) replays the stored pair through the sign-in endpoint and stores the key that sign-in issues. A refused pair keeps the record stored for the next launch and falls back to the sign-in card with the failure showing, and a record written before key reuse — a pair without a key — replays once and gains one.
 
 The endpoint must allow cross-origin calls from the app origin (CORS with JSON content type); the fetch failure path reports an unreachable service instead of breaking the page.
 
-The Models page's Deepagens card carries a "follow the sign-in gateway catalog" switch backed by `llm-deepagens`'s `followGatewayCatalog` field (default on). An explicit `false` hands the route to the user: sign-ins stop re-pointing `baseURL`, replacing `models`, and adopting a gateway default model, so the card's edits survive every launch's catalog sync.
+The Models page's Deepagens card carries a "follow the sign-in gateway catalog" switch backed by `llm-deepagens`'s `followGatewayCatalog` field (default on). An explicit `false` hands the route to the user: sign-ins stop re-pointing `baseURL`, replacing `models`, seeding `imageModel`, and adopting a gateway default model, so the card's edits survive every launch's catalog sync. When follow is on, a listing row whose `supported_endpoint_types` includes `image-generation` is stored with `endpoint: image-generation` and never adopted as the default chat model. Sign-in keeps `imageModel` on a tagged model: a stored tagged id stays, any other value becomes the first tagged id, and a listing without tagged models keeps a stored id or seeds `gpt-image-2` (the shipped base default).
 
 ## Model Experience
 

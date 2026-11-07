@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
@@ -33,13 +34,13 @@
       "path": "../../test-support/loader-smoke"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
-    },
-    {
       "path": "../../core/session"
     },
     {
       "path": "../../session/session-projection"
+    },
+    {
+      "path": "../../util/time"
     }
   ]
 }

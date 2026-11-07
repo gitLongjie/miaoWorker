@@ -12,7 +12,7 @@
  * @module @deepseek-ai/dsh-desktop/updater
  */
 
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, dialog, ipcMain } from 'electron'
 // electron-updater's `autoUpdater` export is a getter, which the ESM-CJS
 // named-export interop (cjs-module-lexer) cannot see; read it off the module
 // object through the default import instead.
@@ -54,8 +54,16 @@ let checkInFlight = false
 /** Badge status most recently published to the renderer; drives re-check skipping. */
 let lastStatus: UpdateStatus | undefined
 
+/** Window fields the updater reads when it publishes badge status. */
+interface UpdateStatusWindow {
+  isDestroyed(): boolean
+  readonly webContents: {
+    send(channel: string, payload?: unknown): void
+  }
+}
+
 /** Window currently receiving updater status events. */
-let updateWindow: BrowserWindow | undefined
+let updateWindow: UpdateStatusWindow | undefined
 
 /** Durable desktop logger supplied by the main process. */
 let reportUpdateError: ((line: string) => void) | undefined
@@ -133,13 +141,15 @@ function scheduleUpdateRecheck(): void {
  * @param t - locale-bound copy resolver (desktop/locales.ts).
  * @param win - the main window whose renderer hosts the update badge.
  * @param updateUrl - generic electron-updater feed base URL, or undefined for
- * deployments that must not check for updates.
+ * deployments that must not check for updates. The development launcher's
+ * `DSH_DESKTOP_DEV` flag unwires the feed as well, because the branded dev exe
+ * indistinguishably reports itself packaged.
  * @param log - durable desktop diagnostic sink.
  * @param prepare - bounded application cleanup before installer launch.
  */
 export function initUpdater(
   t: (key: DesktopTextKey) => string,
-  win: BrowserWindow,
+  win: UpdateStatusWindow,
   updateUrl: string | undefined,
   log?: (line: string) => void,
   prepare: () => Promise<void> = async () => {},
@@ -152,8 +162,12 @@ export function initUpdater(
   checkInFlight = false
   lastStatus = undefined
   prepareInstall = prepare
-  feedConfigured = updateUrl !== undefined
-  if (updateUrl === undefined) return
+  // The branded dev executable reports `app.isPackaged` like the installed
+  // build; the dev launcher's flag is what separates the two. Development
+  // never wires the feed: the check would 404 on channel metadata the feed
+  // does not publish, once per launch and re-check tick.
+  feedConfigured = updateUrl !== undefined && process.env.DSH_DESKTOP_DEV !== '1'
+  if (!feedConfigured) return
   autoUpdater.setFeedURL({
     provider: 'generic',
     url: updateUrl,

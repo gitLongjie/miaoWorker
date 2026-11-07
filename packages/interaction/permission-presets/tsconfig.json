@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
@@ -33,19 +34,16 @@
       "path": "../user-approval"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
-    },
-    {
       "path": "../../session/session-projection"
-    },
-    {
-      "path": "../../settings/settings"
     },
     {
       "path": "../commands"
     },
     {
       "path": "../../typert/protocol"
+    },
+    {
+      "path": "../../settings/settings"
     }
   ]
 }

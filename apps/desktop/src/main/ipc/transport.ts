@@ -12,7 +12,11 @@ import { ipcMain } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
 import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway/types'
+import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
 import { LOOPBACK_AUTHORITY } from './loopback-authority.ts'
+
+/** Desktop streams are host-to-renderer pushes; the renderer never streams items up. */
+const NO_UPLINK: AsyncIterable<unknown> = (async function* () {})()
 
 /** Host services the IPC carrier dispatches through. */
 export interface TransportHostServices {
@@ -35,8 +39,21 @@ export interface TransportFetchRequest {
   method: string
   /** Request headers. */
   headers?: Record<string, string>
-  /** JSON body text. */
-  body?: string
+  /** Request body: JSON text for RPC calls, exact bytes for the binary routes. */
+  body?: string | Uint8Array<ArrayBuffer>
+}
+
+/**
+ * Read an app-scheme request's body for the carrier. Binary routes (image and
+ * file uploads) post their payload here, so the bytes cross as bytes: decoding
+ * them as text replaces every invalid UTF-8 sequence and delivers a corrupted
+ * image to the Host.
+ * @param request - the renderer's app-scheme `/api` request.
+ * @returns the exact request bytes, or undefined for a bodyless method.
+ */
+export async function transportRequestBytes(request: Request): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  if (request.method === 'GET' || request.method === 'HEAD') return undefined
+  return new Uint8Array(await request.arrayBuffer())
 }
 
 /** The fetch response carried back to the renderer. */
@@ -90,7 +107,8 @@ export async function dispatchTransportFetch(
     requestBodyMode: () => 'buffered',
     fetch: () => Promise.resolve(new Response('not found', { status: 404 })),
   }))
-  return handler.fetch(new Request(new URL(req.path, LOOPBACK_AUTHORITY), init))
+  // The in-process renderer carrier speaks for the shared browser peer.
+  return handler.fetch(new Request(new URL(req.path, LOOPBACK_AUTHORITY), init), connection.browserPeer)
 }
 
 /**
@@ -135,6 +153,7 @@ export function registerTransportIpc(
     endpoint: string
     payload: unknown
     gateway: TypertGateway
+    peer: PeerScope
     controller: AbortController
   }>()
 
@@ -154,7 +173,7 @@ export function registerTransportIpc(
     }
     void (async () => {
       try {
-        const items = await gateway.wireStream.open(endpoint, pending.payload, controller.signal)
+        const items = await gateway.wireStream.open(endpoint, pending.payload, NO_UPLINK, pending.peer, controller.signal)
         for await (const item of items) {
           if (sender.isDestroyed()) break
           // One object argument: the preload bridge forwards a single payload
@@ -176,6 +195,8 @@ export function registerTransportIpc(
     // pending until its replacement publishes instead of turning a normal
     // host reload into a renderer-side connection failure.
     const gateway = getHost().gateway ?? await waitForGateway()
+    const connection = getHost().connection
+    if (connection === undefined) throw new Error('desktop stream: host connection not ready')
     const streamId = randomUUID()
     const controller = new AbortController()
     streamAborts.set(streamId, controller)
@@ -184,6 +205,7 @@ export function registerTransportIpc(
       endpoint: opts.endpoint,
       payload: opts.payload,
       gateway,
+      peer: connection.browserPeer,
       controller,
     })
     return { streamId }

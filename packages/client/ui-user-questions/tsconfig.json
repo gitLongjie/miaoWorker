@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.client.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
@@ -27,13 +28,16 @@
       "path": "../../typert/protocol"
     },
     {
-      "path": "../locale"
+      "path": "../locale/tsconfig.client.json"
     },
     {
       "path": "../store"
     },
     {
-      "path": "../ui-conversation"
+      "path": "../ui-chat/tsconfig.client.json"
+    },
+    {
+      "path": "../ui-conversation/tsconfig.client.json"
     },
     {
       "path": "../ui-primitives"
@@ -46,6 +50,18 @@
     },
     {
       "path": "../ui-session"
+    },
+    {
+      "path": "../ui-tool"
+    },
+    {
+      "path": "../../llm/llm"
+    },
+    {
+      "path": "../../util/brand"
+    },
+    {
+      "path": "../../core/tool-executor-ptc"
     }
   ]
 }

@@ -8,8 +8,8 @@
  * @module @deepseek-ai/dsh-desktop/boot
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { FiberState, type Context } from '@deepseek-ai/cordis'
@@ -18,18 +18,19 @@ import type { EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
 import {
   boot,
   composeEntries,
-  healProfilesModuleFallback,
+  createRuntimeResolution,
   installFailLoud,
   loadOptionalPatches,
   loadOverlayPatches,
   loadProfile,
+  PluginPackages,
   PROFILE_PATCH_FILENAME,
-  resolveInstallationModuleLinks,
-  watchUserPatches,
+  type Profile,
+  type ProfileContext,
 } from '@deepseek-ai/dsh-app-boot'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { DSH_LAUNCH_ENVIRONMENT_KEY, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
-import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
+import { createAppReady, provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
 
 const NAME = 'desktop'
@@ -40,8 +41,8 @@ const INSTALL_ANCHOR = fileURLToPath(new URL('../../package.json', import.meta.u
 /** The desktop overlay patch, beside this app (source and built layouts share the apps/desktop directory). */
 const DESKTOP_PATCH = fileURLToPath(new URL('../../cordis.patch.yml', import.meta.url))
 
-/** Shipped agent-preset root: beside this app's own config, in both layouts. */
-const SHIPPED_PRESET_ROOT = fileURLToPath(new URL('../../config/agent-presets/', import.meta.url))
+/** Declarative expert roster beside this app's config in source and packaged layouts. */
+const SHIPPED_PRESETS = new URL('../../config/agent-presets/cordis.yml', import.meta.url).href
 
 /** Root config filename inside a profile directory. */
 const PROFILE_ROOT_FILENAME = 'cordis.yml'
@@ -57,18 +58,17 @@ const PROFILE_ROOT_CONFIG = `# dsh profile root — an empty entry list. The tre
 const TELEMETRY_ROW_ID = 'session-telemetry-otel'
 
 /**
- * Whether this boot runs in an open checkout and must therefore heal the
- * shared `$DSH_HOME/profiles/node_modules` farm. The branded dev executable
- * reports `app.isPackaged` like the installed build and receives a
+ * Whether this boot runs in an open checkout and must therefore ensure the
+ * repository-root plugin links. The branded dev executable reports
+ * `app.isPackaged` like the installed build and receives a
  * `bareModuleBaseUrl`, but its checkout is a real filesystem tree whose
- * preset roster resolves through the shared farm — skipping the heal there
- * leaves the farm stale whenever the checkout gains a package, and discovery
- * then reports every composition naming the new package unresolvable. Only a
- * closed archive skips the heal: links cannot reach inside app.asar, and that
- * runtime resolves bare plugins through the archive base instead. Segment
- * comparison so an `app.asar.unpacked` twin does not read as the archive.
+ * third-party plugin packages are resolvable only through the links
+ * {@link ensureRootPluginLinks} writes. Only a closed archive skips the work:
+ * links cannot reach inside app.asar, and that runtime resolves bare plugins
+ * through the archive base instead. Segment comparison so an
+ * `app.asar.unpacked` twin does not read as the archive.
  * @param bareModuleBaseUrl - the bare-module base URL this boot was given, if any.
- * @returns true when the boot must heal the shared farm.
+ * @returns true when the boot must ensure the root plugin links.
  */
 export function healsSharedModuleFallback(bareModuleBaseUrl: string | undefined): boolean {
   return bareModuleBaseUrl === undefined
@@ -83,19 +83,155 @@ export interface RootPluginLinkDirs {
   rootAi?: string
   /** The installation anchor whose plugin closure the direct links follow. */
   installAnchor?: string
+  /** The active profile's farm `node_modules` carrying third-party plugin packages. */
+  profilesModules?: string
+  /** The repository-root `node_modules` the third-party links land in. */
+  rootModules?: string
+}
+
+/**
+ * Physical directories of the third-party plugin packages a profile farm
+ * carries, keyed by package name (`@xmanrui/dsh-im`). A package qualifies when
+ * its manifest declares a `dsh.bundle`; libraries in the same farm stay out.
+ * @param modulesDir - the profile's farm `node_modules` directory.
+ * @returns package name to its physical directory.
+ */
+function profilePluginPackages(modulesDir: string): Map<string, string> {
+  const dirs = new Map<string, string>()
+  if (!existsSync(modulesDir)) return dirs
+  const qualify = (packageDir: string, name: string): void => {
+    let manifest: { dsh?: { bundle?: unknown } }
+    try {
+      manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as typeof manifest
+    } catch {
+      // An unreadable manifest is not a plugin package.
+      return
+    }
+    if (manifest.dsh?.bundle === undefined) return
+    try {
+      dirs.set(name, realpathSync.native(packageDir))
+    } catch {
+      dirs.set(name, packageDir)
+    }
+  }
+  for (const entry of readdirSync(modulesDir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.') || entry.name === '@deepseek-ai') continue
+    if (entry.name.startsWith('@')) {
+      const scopeDir = join(modulesDir, entry.name)
+      if (!existsSync(scopeDir)) continue
+      for (const scoped of readdirSync(scopeDir, { withFileTypes: true })) {
+        if (scoped.name.startsWith('.')) continue
+        qualify(join(scopeDir, scoped.name), `${entry.name}/${scoped.name}`)
+      }
+      continue
+    }
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+    qualify(join(modulesDir, entry.name), entry.name)
+  }
+  return dirs
+}
+
+/** Counters {@link ensureLink} reports through. */
+interface LinkCounts {
+  created: number
+  updated: number
+}
+
+/** Point `link` at `target`, replacing an existing link whose target differs; a non-link entry stays. */
+function ensureLink(link: string, target: string, counts: LinkCounts): void {
+  let current: string | undefined
+  try {
+    current = readlinkSync(link)
+  } catch {
+    // Missing link — nothing to compare or replace.
+  }
+  if (current !== undefined && sameLinkTarget(link, current, target)) return
+  if (current !== undefined) {
+    try {
+      unlinkSync(link)
+    } catch {
+      // A non-link entry (pnpm-owned or foreign) is not ours to replace.
+      return
+    }
+  }
+  try {
+    symlinkSync(target, link, 'junction')
+    if (current === undefined) counts.created += 1
+    else counts.updated += 1
+  } catch {
+    // A racing link or permission denial is not fatal; a later launch retries.
+  }
+}
+
+/**
+ * Physical directories of this checkout's `@deepseek-ai` packages, keyed by
+ * the unscoped directory name (`dsh-subagent`).
+ * @param repoRoot - repository root that contains `packages/` and `vendor/`.
+ * @returns unscoped package name to its physical directory.
+ */
+function workspaceScopePackages(repoRoot: string): Map<string, string> {
+  const scope = '@deepseek-ai/'
+  const dirs = new Map<string, string>()
+  const add = (dir: string): void => {
+    const manifestPath = join(dir, 'package.json')
+    if (!existsSync(manifestPath)) return
+    let name = ''
+    try {
+      name = (JSON.parse(readFileSync(manifestPath, 'utf8')) as { name?: string }).name ?? ''
+    } catch {
+      // An unreadable manifest is not a link target.
+      return
+    }
+    if (!name.startsWith(scope)) return
+    const unscoped = name.slice(scope.length)
+    if (unscoped.length === 0 || unscoped.includes('/')) return
+    try {
+      dirs.set(unscoped, realpathSync.native(dir))
+    } catch {
+      dirs.set(unscoped, dir)
+    }
+  }
+  for (const group of ['packages', 'vendor']) {
+    const groupDir = join(repoRoot, group)
+    if (!existsSync(groupDir)) continue
+    for (const outer of readdirSync(groupDir, { withFileTypes: true })) {
+      if (!outer.isDirectory() || outer.name === 'node_modules') continue
+      const outerDir = join(groupDir, outer.name)
+      if (existsSync(join(outerDir, 'package.json'))) {
+        add(outerDir)
+        continue
+      }
+      for (const inner of readdirSync(outerDir, { withFileTypes: true })) {
+        if (!inner.isDirectory() || inner.name === 'node_modules') continue
+        add(join(outerDir, inner.name))
+      }
+    }
+  }
+  return dirs
+}
+
+/** Whether an existing link already names the same directory as `target`. */
+function sameLinkTarget(link: string, current: string, target: string): boolean {
+  if (current === target) return true
+  const currentPath = isAbsolute(current) ? current : join(dirname(link), current)
+  try {
+    return realpathSync.native(currentPath) === realpathSync.native(target)
+  } catch {
+    return false
+  }
 }
 
 /**
  * Link the loader-visible plugin packages into the repository root node_modules.
- * In the open (non-packaged) runtime the vendored Loader's plain bare import
- * resolves from vendor/loader, whose lookup walks up to the repository root —
- * not the profile baseUrl — so every dsh-owned link points directly at the
- * running installation's resolved package directory and is rewritten when its
- * target differs: the shared fallback directory is rewritten by whichever dsh
- * installation healed last, and a mirror link would follow whatever foreign
- * plugin generation it currently holds. Names outside the installation closure
- * keep that mirror for profile-scope plugins. Junctions avoid Windows symlink
- * privileges. Best-effort: the packaged runtime needs none of this.
+ * The branded dev executable resolves bare imports from `apps/desktop`, which
+ * walks up to this directory. Each `@deepseek-ai` package in the checkout is
+ * linked at its own directory. A name that exists only in the shared profiles
+ * farm stays mirrored there for profile-scope plugins, and every third-party
+ * plugin package the web profile farm carries (`dsh.bundle` manifest) is
+ * linked at its own node_modules location — scoped names included — because
+ * the dev exe's bare import walk cannot reach the farm. A link whose target
+ * differs is rewritten. Junctions avoid Windows symlink privileges.
+ * Best-effort: a closed `app.asar` runtime does not call this.
  * @param dirs - directory overrides for tests.
  */
 export function ensureRootPluginLinks(dirs: RootPluginLinkDirs = {}): void {
@@ -103,48 +239,28 @@ export function ensureRootPluginLinks(dirs: RootPluginLinkDirs = {}): void {
     const profilesAi = dirs.profilesAi ?? join(resolveDshHome(), 'profiles', 'node_modules', '@deepseek-ai')
     // dist/main → repository root is four hops (main → dist → desktop → apps → root).
     const rootAi = dirs.rootAi ?? fileURLToPath(new URL('../../../../node_modules/@deepseek-ai', import.meta.url))
+    const installAnchor = dirs.installAnchor ?? INSTALL_ANCHOR
+    // The desktop boots the web profile, so its farm is where third-party
+    // plugin packages live; the branded dev exe cannot resolve them otherwise.
+    const profilesModules = dirs.profilesModules ?? join(resolveDshHome(), 'profiles', 'web', 'node_modules')
+    const rootModules = dirs.rootModules ?? dirname(rootAi)
     mkdirSync(rootAi, { recursive: true })
-    // rootAi is one package scope directory; only that scope's closure entries
-    // belong here, named without the scope prefix. Other closure packages
-    // resolve beside their dependents and stay out of this mirror.
-    const scope = `${basename(rootAi)}/`
-    const targets = new Map<string, string>()
-    for (const [packageName, target] of resolveInstallationModuleLinks(dirs.installAnchor ?? INSTALL_ANCHOR)) {
-      if (packageName.startsWith(scope)) targets.set(packageName.slice(scope.length), target)
-    }
+    const counts: LinkCounts = { created: 0, updated: 0 }
+    const targets = workspaceScopePackages(join(dirname(installAnchor), '..', '..'))
     if (existsSync(profilesAi)) {
-      for (const name of readdirSync(profilesAi)) {
-        if (!targets.has(name)) targets.set(name, join(profilesAi, name))
+      for (const entry of readdirSync(profilesAi, { withFileTypes: true })) {
+        if (targets.has(entry.name)) continue
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+        targets.set(entry.name, join(profilesAi, entry.name))
       }
     }
-    let created = 0
-    let updated = 0
-    for (const [name, target] of targets) {
-      const link = join(rootAi, name)
-      let current: string | undefined
-      try {
-        current = readlinkSync(link)
-      } catch {
-        // Missing link — nothing to compare or replace.
-      }
-      if (current === target) continue
-      if (current !== undefined) {
-        try {
-          unlinkSync(link)
-        } catch {
-          // A non-link entry (pnpm-owned or foreign) is not ours to replace.
-          continue
-        }
-      }
-      try {
-        symlinkSync(target, link, 'junction')
-        if (current === undefined) created += 1
-        else updated += 1
-      } catch {
-        // A racing link or permission denial is not fatal; a later launch retries.
-      }
+    for (const [name, target] of targets) ensureLink(join(rootAi, name), target, counts)
+    for (const [name, target] of profilePluginPackages(profilesModules)) {
+      const link = join(rootModules, name)
+      mkdirSync(dirname(link), { recursive: true })
+      ensureLink(link, target, counts)
     }
-    console.error(`desktop: root plugin links ensured (${created} created, ${updated} updated)`)
+    console.error(`desktop: root plugin links ensured (${String(counts.created)} created, ${String(counts.updated)} updated)`)
   } catch (error) {
     console.error(`desktop: root plugin links failed: ${error instanceof Error ? error.message : String(error)}`)
   }
@@ -211,6 +327,22 @@ export function resolveTelemetryPatch(disabledEnv: string | undefined, hasRow: b
   return { id: TELEMETRY_ROW_ID, disabled: true }
 }
 
+/** The product analytics rows the web-app bundle inserts for the desktop surface. */
+const PRODUCT_ANALYTICS_ROW_IDS = ['desktop-product-telemetry', 'product-analytics'] as const
+
+/**
+ * Resolve the development switch into patches muting product analytics. A
+ * development session's activity is not product data, and the branded dev
+ * executable is the only place `DSH_DESKTOP_DEV` is set; installed builds keep
+ * the composition's own desktop rows.
+ * @param devEnv - the raw `DSH_DESKTOP_DEV` value (`undefined` when unset).
+ * @returns one disable patch per analytics row, empty outside development.
+ */
+export function resolveDevAnalyticsPatches(devEnv: string | undefined): PatchOptions[] {
+  if (devEnv !== '1') return []
+  return PRODUCT_ANALYTICS_ROW_IDS.map(id => ({ id, disabled: true }))
+}
+
 /**
  * Resolve the market anchor handoff into its boot patch. The packaged shell's
  * app package sits at the asar root, off every Node search path, so
@@ -223,6 +355,32 @@ export function resolveTelemetryPatch(disabledEnv: string | undefined, hasRow: b
 export function resolveMarketAnchorPatch(hasRow: boolean, installAnchor: string): PatchOptions | undefined {
   if (!hasRow) return undefined
   return { id: 'market-local', config: { installAnchor } }
+}
+
+/**
+ * Launcher facts for the in-process desktop Host. The tree loads the web
+ * profile bundles from the web profile directory, but `name` is `desktop` so
+ * composition rows keyed on the desktop surface activate and profile-backed
+ * services (`configEditor`, `settings`) mount.
+ * @param profile - the loaded web profile tree this boot composes.
+ * @param overlays - boot-time patches applied above bundle and user layers.
+ * @returns the context every profile-scoped service reads through `ctx.profileContext`.
+ */
+export function createDesktopProfileContext(
+  profile: Profile,
+  overlays: readonly PatchOptions[],
+): ProfileContext {
+  return {
+    name: 'desktop',
+    dir: profile.dir,
+    patchPath: profile.patchPath,
+    installAnchor: INSTALL_ANCHOR,
+    startedBundles: profile.layers.map(layer => layer.packageName),
+    cwd: process.cwd(),
+    home: resolveDshHome(),
+    overlays,
+    telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED,
+  }
 }
 
 /** Options for {@link runDesktopBoot}. */
@@ -255,16 +413,14 @@ export interface DesktopBootResult {
  * @returns the settled root context and the shutdown controller.
  */
 export async function runDesktopBoot(options: DesktopBootOptions): Promise<DesktopBootResult> {
-  // Heal the shared module fallback in every open runtime, the branded dev
-  // executable included ({@link healsSharedModuleFallback}). Only a closed
-  // packaged runtime skips the heal and resolves bare plugins through
-  // bareModuleBaseUrl instead, because creating $DSH_HOME/profiles/node_modules
-  // links cannot reach inside app.asar.
-  if (healsSharedModuleFallback(options.bareModuleBaseUrl)) {
-    await healProfilesModuleFallback({ installAnchor: INSTALL_ANCHOR })
-    ensureRootPluginLinks()
-  }
+  if (healsSharedModuleFallback(options.bareModuleBaseUrl)) ensureRootPluginLinks()
   const profile = loadProfile(NAME, 'web', INSTALL_ANCHOR)
+  // Preset subtrees and nested Includes resolve bare plugin names from the
+  // profile directory, where only the (unmaintained) shared farm walk stands
+  // between a composition and an unresolvable package. The runtime resolution
+  // supplies installation- and profile-scope packages to Node's resolvers the
+  // same way the CLI does; see the plugin(PluginPackages) mount below.
+  const resolution = await createRuntimeResolution({ installAnchor: INSTALL_ANCHOR, profile })
   // The root is always rewritten: the whole composition is patch layers, and
   // the vendored Loader's tree write-back can bake composed rows into this file.
   writeFileSync(join(profile.dir, PROFILE_ROOT_FILENAME), PROFILE_ROOT_CONFIG)
@@ -276,17 +432,12 @@ export async function runDesktopBoot(options: DesktopBootOptions): Promise<Deskt
     if (typeof row.id === 'string') rows.set(row.id, row)
   }
   const overlays: PatchOptions[] = [...loadOverlayPatches(NAME, DESKTOP_PATCH)]
-  // The SHIPPED root is the part of the roster only this app can resolve; the
-  // writable root stays `dsh-agent-presets`' own (`includeUserRoot`).
-  if (rows.has('agent-presets')) {
-    overlays.push({
-      id: 'agent-presets',
-      config: {
-        ...(rows.get('agent-presets')?.config ?? {}) as Record<string, unknown>,
-        roots: [{ path: SHIPPED_PRESET_ROOT, trust: 'system' }],
-      },
-    })
-  }
+  overlays.push({ insert: [{
+    id: 'desktop-experts',
+    name: '@deepseek-ai/cordis-plugin-include',
+    config: { path: SHIPPED_PRESETS },
+  }] })
+  overlays.push(...resolveDevAnalyticsPatches(process.env.DSH_DESKTOP_DEV))
   // A patch's config replaces the row's config wholesale, so the market anchor
   // rides on the row's own composed config.
   const marketAnchorPatch = resolveMarketAnchorPatch(rows.has('market-local'), INSTALL_ANCHOR)
@@ -326,12 +477,21 @@ export async function runDesktopBoot(options: DesktopBootOptions): Promise<Deskt
 
   const rootConfig = join(profile.dir, PROFILE_ROOT_FILENAME)
   const allPatches = [...bundlePatches, ...profile.patches, ...homePatches, ...overlays]
-  const ctx = await boot(NAME, rootConfig, structuredClone(allPatches), (hostCtx) => {
+  const profileContext = createDesktopProfileContext(profile, overlays)
+  const appReady = createAppReady()
+  const ctx = await boot(NAME, rootConfig, structuredClone(allPatches), async (hostCtx) => {
     app.current = hostCtx
+    hostCtx.provide('profileContext', profileContext)
     hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, options.environment)
+    // Before any config-tree entry mounts, so every plugin import routes
+    // through the computed resolution rather than the shared farm walk.
+    await hostCtx.plugin(PluginPackages, { resolution })
     provideCmdline(hostCtx, {
       args: options.args,
       exit: code => void shutdown.shutdown(code),
+      // Profile-scoped entries (the `hmr` row) hold startup work until the
+      // launcher commits this signal.
+      ready: appReady.service,
       // The desktop boots the web profile; profile-scoped services (the
       // plugin market) resolve the profile they manage from this fact.
       profile: 'web',
@@ -340,36 +500,19 @@ export async function runDesktopBoot(options: DesktopBootOptions): Promise<Deskt
   app.current = ctx
 
   // Config-only HMR for the live profile/home patch layers, mirroring the CLI
-  // surface: the web bundle disables the shared `hmr` row, so mount a
-  // watch-only instance with no module roots when the composition left none.
+  // surface: the composition's own `hmr` row reloads profile patch files once
+  // readiness commits; mount a watch-only instance with no module roots when
+  // the composition left none.
   if (ctx.fiber.state === FiberState.ACTIVE && ctx.get('loader') !== undefined) {
-    const composeLive = (): PatchOptions[] => structuredClone([
-      ...bundlePatches,
-      ...loadOptionalPatches(NAME, profile.patchPath) ?? [],
-      ...loadOptionalPatches(NAME, homePatchPath()) ?? [],
-      ...overlays,
-    ])
-    try {
-      if (ctx.get('hmr') === undefined) {
-        if (ctx.get('timer') === undefined) {
-          await ctx.loader.create({ name: '@deepseek-ai/cordis-plugin-timer' })
-        }
-        await ctx.loader.create({ name: '@deepseek-ai/cordis-plugin-hmr', config: { root: [] } })
+    appReady.commit()
+    // FIXME(host-patches): user-patch hot reload (the upstream-removed
+    // watchUserPatches) is disabled; committed patch edits now apply on the
+    // next launch. The hmr/timer plugins stay available for entry-level HMR.
+    if (ctx.get('hmr') === undefined) {
+      if (ctx.get('timer') === undefined) {
+        await ctx.loader.create({ name: '@deepseek-ai/cordis-plugin-timer' })
       }
-      await watchUserPatches(ctx, {
-        binName: NAME,
-        filename: profile.patchPath,
-        compose: composeLive,
-      })
-      await watchUserPatches(ctx, {
-        binName: NAME,
-        filename: homePatchPath(),
-        compose: composeLive,
-      })
-    } catch (error) {
-      // The tree already exited as asked, or watching failed; a broken watch
-      // must not take the app down with it.
-      ctx.logger.warn(`desktop: user-patch watching failed: ${String(error)}`)
+      await ctx.loader.create({ name: '@deepseek-ai/cordis-plugin-hmr', config: { root: [] } })
     }
   }
   return { ctx, shutdown }

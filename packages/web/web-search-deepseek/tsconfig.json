@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
@@ -33,7 +34,7 @@
       "path": "../../credentials/credentials"
     },
     {
-      "path": "../../settings/settings"
+      "path": "../../credentials/deepseek-account"
     },
     {
       "path": "../../util/http-proxy"

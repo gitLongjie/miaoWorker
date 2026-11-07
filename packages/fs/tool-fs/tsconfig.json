@@ -2,9 +2,12 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
-  "include": ["src"],
+  "include": [
+    "src"
+  ],
   "references": [
     {
       "path": "../../../vendor/cosmokit"
@@ -41,6 +44,18 @@
     },
     {
       "path": "../../attachment/attachment"
+    },
+    {
+      "path": "../../util/code-language"
+    },
+    {
+      "path": "../fs-patch"
+    },
+    {
+      "path": "../../util/values"
+    },
+    {
+      "path": "../../session/working-directory"
     }
   ]
 }

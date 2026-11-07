@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.client.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
@@ -12,7 +13,7 @@
       "path": "../../../vendor/cordis"
     },
     {
-      "path": "../../client/locale"
+      "path": "../../client/locale/tsconfig.client.json"
     },
     {
       "path": "../cordis-client-runner"
@@ -25,9 +26,6 @@
     },
     {
       "path": "../../client/ui-sidebar"
-    },
-    {
-      "path": "../../client/ui-input-trigger"
     },
     {
       "path": "../../client/ui-primitives"

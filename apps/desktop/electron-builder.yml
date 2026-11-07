@@ -3,7 +3,7 @@
 # APPLE_* secrets in the environment, electron-builder skips Windows signing and
 # macOS notarization (identity: null). Populate the CI secrets (see README) to
 # enable real signing without touching this file.
-appId: com.meowwork.app
+appId: com.deepagens.app
 # deploy-app.mjs supplies productName and platform-native derivatives through
 # its generated dist/electron-builder.oem.json overlay.
 # Keep the packaged application artwork aligned with the runtime window and
@@ -67,7 +67,7 @@ win:
   # Windows Explorer, the taskbar, and Task Manager read the executable's
   # embedded icon rather than BrowserWindow's runtime icon.
   icon: build/icon.ico
-  executableName: miaoWorker
+  executableName: DeepWorker
   target:
     - target: nsis
       arch:
@@ -76,30 +76,30 @@ nsis:
   # electron-publish uploads release assets under this name verbatim: a
   # non-ASCII prefix puts unescaped characters in the GitHub request path and
   # electron-builder's safe-name fallback drops the arch suffix. Keep the
-  # artifact prefix ASCII; the display name stays 喵工作台.
-  artifactName: miaoWorker-${version}-win-${arch}.${ext}
+  # artifact prefix ASCII; shortcuts and the uninstall entry follow ${productName}.
+  artifactName: DeepWorker-${version}-win-${arch}.${ext}
   # Per-machine install so the assisted wizard defaults to Program Files, and
-  # installer.nsh pins that default to the ASCII miaoWorker directory: the
-  # display name stays 喵工作台 while the on-disk path stays stable across OEM
-  # renames.
+  # installer.nsh pins that default to the ASCII DeepWorker directory: the
+  # display name follows productName while the on-disk path stays stable across
+  # OEM renames.
   perMachine: true
   include: build/installer.nsh
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: 喵工作台
-  uninstallDisplayName: 喵工作台
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
 mac:
   # Both architectures are built in one job. The architecture suffix prevents
   # the Intel and Apple Silicon assets from colliding in the GitHub release.
   # Keep the artifact prefix ASCII (see the nsis note).
-  artifactName: miaoWorker-${version}-mac-${arch}.${ext}
+  artifactName: DeepWorker-${version}-mac-${arch}.${ext}
   # The app bundle under /Applications follows the platform executable name:
-  # an ASCII miaoWorker.app matches the Windows install directory and keeps
-  # scripts and support paths stable, while productName (喵工作台) stays the
-  # display name — CFBundleName, the window title, tray, and About copy.
-  executableName: miaoWorker
+  # an ASCII DeepWorker.app matches the Windows install directory and keeps
+  # scripts and support paths stable, while productName stays the display
+  # name — CFBundleName, the window title, tray, notifications, and About copy.
+  executableName: DeepWorker
   target:
     - target: dmg
       arch:
@@ -115,7 +115,7 @@ mac:
   identity: null
   notarize: false
 dmg:
-  artifactName: miaoWorker-${version}-mac-${arch}.${ext}
+  artifactName: DeepWorker-${version}-mac-${arch}.${ext}
 linux:
   target:
     - AppImage
@@ -123,24 +123,24 @@ linux:
   category: Development
   # Without an explicit name, AppImage/deb infer executableName from the
   # package.json name (which contains @ and /) and the build fails.
-  executableName: miaoworker
+  executableName: deepworker
   # The scoped package name (@deepseek-ai/dsh-desktop) would put the .deb under
   # a missing dist-electron/@deepseek-ai/ directory (fpm: parent directory does
   # not exist). Pin a flat artifact name so both Linux targets write directly
   # under dist-electron/.
   # Keep the artifact prefix ASCII (see the nsis note).
-  artifactName: miaoWorker-${version}-linux-${arch}.${ext}
+  artifactName: DeepWorker-${version}-linux-${arch}.${ext}
 publish:
   provider: github
   owner: gitLongjie
-  repo: miaoWorker
+  repo: deepseek-harness
   releaseType: release
-  # The miaoWorker repository is the release home: the desktop-publish
-  # workflow tags and builds there, so `--publish always` (manual `pnpm
-  # release` runs and the workflow's smoke --publish path) must target this
-  # same repository for the built-in GITHUB_TOKEN to have write access. The
-  # packaged app's updater feed is the generic provider baked from
-  # oem.config.json's updateUrl (the ciyuan /setup/ mirror), not this block.
-  # GitHub release tags default to v${version} and
+  # The desktop-publish workflow runs in THIS repository, so `--publish always`
+  # (manual `pnpm release` runs and the workflow's smoke --publish path) must
+  # target it for the built-in GITHUB_TOKEN to have write access — a repo
+  # mismatch fails the upload with 403 after the installers are already built.
+  # The packaged app's updater feed is the generic provider baked from
+  # oem.config.json's updateUrl, which points at this repository's releases
+  # too. GitHub release tags default to v${version} and
   # electron-updater parses tags as semver, so a non-semver prefix (e.g.
   # desktop-v) breaks update detection; keep the default v prefix.

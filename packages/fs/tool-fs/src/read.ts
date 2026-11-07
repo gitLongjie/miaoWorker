@@ -8,6 +8,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, ReadResultView, ToolResult } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-fs'
+import { extractOfficeText, OFFICE_READ_MAX_BYTES, officeReadKind } from './read-office.ts'
 import { buildWindow, formatReadOutput, langFromPath, readMetaFromMeta } from './read-render.ts'
 import { resolveRegularReadTarget } from './read-target.ts'
 
@@ -71,7 +72,7 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
     order: ctx.systemPrompt.getSectionOrder('TOOL_READ'),
     text: ({ scope }) => ctx.tools.get('read', scope) === undefined
       ? ''
-      : 'Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files.',
+      : 'Use the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.',
   })
 
   ctx.tools.register(defineTool({
@@ -87,7 +88,7 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
         type: 'object',
         additionalProperties: false,
         properties: {
-          path: { type: 'string', required: true },
+          path: { type: 'string', required: true, description: 'Canonical absolute path in the filesystem execution world.' },
           offset: { type: 'integer', required: true },
           lines: {
             type: 'array',
@@ -140,11 +141,19 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
       // A concurrent write can only make a later guarded mutation fail stale and require reread.
       const { target, info } = await resolveRegularReadTarget(ctx, exec, input.filePath)
 
-      // Stream when the file is large OR size is unknown, so a size-less backend
-      // never buffers an arbitrarily large file.
-      const chunks = info.size === undefined || info.size >= caps.streamMinSize
-        ? await ctx.fs.streamText(target, exec.signal)
-        : [await ctx.fs.readText(target, exec.signal)]
+      // Office packages are zip bytes. Extract their text before the UTF-8 reader
+      // rejects the NUL sample. Large or size-unknown text files stream so a
+      // size-less backend never buffers an arbitrarily large file.
+      const kind = officeReadKind(target.displayPath)
+      const chunks = kind === undefined
+        ? info.size === undefined || info.size >= caps.streamMinSize
+          ? await ctx.fs.streamText(target, exec.signal)
+          : [await ctx.fs.readText(target, exec.signal)]
+        : [extractOfficeText(
+          kind,
+          await ctx.fs.readBytes(target, exec.signal, OFFICE_READ_MAX_BYTES),
+          target.displayPath,
+        )]
       const window = await buildWindow(
         chunks,
         { offset: input.offset, limit: input.limit, maxLineLength: caps.maxLineLength, maxBytes: caps.maxBytes },
@@ -152,7 +161,7 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
       )
 
       const outcome = {
-        path: target.displayPath,
+        path: ctx.fs.processPath(target),
         offset: input.offset,
         lines: window.lines,
         totalLines: window.totalLines,

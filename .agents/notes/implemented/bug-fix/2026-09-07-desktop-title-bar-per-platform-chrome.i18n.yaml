@@ -1,6 +1,22 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for 2026-09-07-desktop-title-bar-per-platform-chrome.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-07-desktop-title-bar-per-platform-chrome.md
-2026-09-07-desktop-title-bar-per-platform-chrome.md: 0b352503f286eeadeea18788f62d95618a1889c3
-2026-09-07-desktop-title-bar-per-platform-chrome.zh.md: 726ec4812615fe9e3a25c9a37af4baf8edc84f0d
+/agent-note-the-desktop-title-bar-styles-per-platform-instead-of-shipping-the-windows-chrome-everywhere:
+  en: 651ae449444d14aa
+  zh: b17213ea67e1c8e1
+/agent-note-the-desktop-title-bar-styles-per-platform-instead-of-shipping-the-windows-chrome-everywhere/problem:
+  en: 83586c4a78be93c1
+  zh: 2d0e70cf1393a7a0
+/agent-note-the-desktop-title-bar-styles-per-platform-instead-of-shipping-the-windows-chrome-everywhere/decision:
+  en: ea18d8d9588ab220
+  zh: 6a94be05ff7123a8
+/agent-note-the-desktop-title-bar-styles-per-platform-instead-of-shipping-the-windows-chrome-everywhere/alternatives-considered:
+  en: 3e2f4d774f56fc30
+  zh: 0692caa4856639a1
+/agent-note-the-desktop-title-bar-styles-per-platform-instead-of-shipping-the-windows-chrome-everywhere/verification:
+  en: 6f84000f26b2c74b
+  zh: c03944beee8e991d
+/agent-note-the-desktop-title-bar-styles-per-platform-instead-of-shipping-the-windows-chrome-everywhere/consequences:
+  en: 7cf90ac3e1ad15aa
+  zh: 9f8027be8a21ab43

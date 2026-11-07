@@ -103,7 +103,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        # The macOS arm64 hosted pool currently provisions-fails on this
+        # workflow (five consecutive jobs died at exactly 15:01 with zero
+        # steps and no logs, across macos-latest and macos-15; the same
+        # workflow ran macos-latest fine on 2026-10-27). The Intel pool takes
+        # a separate provisioning path; the build itself cross-compiles both
+        # architectures either way.
+        os: [windows-latest, macos-15-intel]
     steps:
       - uses: actions/checkout@v6
 
@@ -116,9 +122,28 @@ jobs:
 
       - name: Install (immutable)
         run: pnpm install --frozen-lockfile
+        env:
+          # The client-face tsc program OOMs at the default ~2 GiB heap on the
+          # post-merge package graph; the host-libraries step already runs
+          # with --max-old-space-size=8192 for the same reason.
+          NODE_OPTIONS: --max-old-space-size=8192
 
       - name: Build host libs
         run: pnpm build:lib
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      # The POSIX session lock (session-persistence-jsonl's lease) resolves a
+      # flock NAPI binding from the @deepseek-ai/node-addon-system platform
+      # packages, whose published npm tarballs carry no bin/ — the binaries
+      # exist only after this clang build. macOS cross-compiles both
+      # architectures (`cc -arch`); without this step every session write on
+      # macOS fails the run with 'Cannot find module ... system.node'.
+      - name: Build native system bindings (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          NARB_ARCH=arm64 pnpm --dir native/system run build:native
+          NARB_ARCH=x64 pnpm --dir native/system run build:native
 
       # Package the --dir artifact and boot it under the smoke harness, and
       # only after the smoke passes run the full release build with
@@ -138,6 +163,10 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           GH_TOKEN: ${{ github.token }}
+          # The macOS runner holds 7 GB; uncapped V8 heaps across the build's
+          # tsc/vite/rolldown processes exceed it and the runner is killed
+          # mid-build (the job reports "cancelled" and uploads no logs).
+          NODE_OPTIONS: --max-old-space-size=4096
 
       - uses: actions/upload-artifact@v7
         with:

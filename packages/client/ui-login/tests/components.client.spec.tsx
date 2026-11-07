@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { LoginGate } from '../src/client/LoginGate.tsx'
 import { SidebarAccount } from '../src/client/SidebarAccount.tsx'
+import { GatewayAccountSection } from '../src/client/GatewayAccountSection.tsx'
 import { LoginStore, type LoginApi, type LoginCredentialAdapter } from '../src/client/login-store.ts'
 
 // Minimal API mock for the LoginStore constructor: discovery returns an empty
@@ -122,11 +123,83 @@ describe('LoginGate', () => {
   })
 })
 
+describe('GatewayAccountSection', () => {
+  /** Sign in against a token-usage stub: used and remaining counts, or a refusal. */
+  async function signInWithTokens(
+    controller: LoginStore,
+    used: number,
+    remaining: number,
+    status = 200,
+    unlimited = false,
+    avatar: string | null = null,
+  ): Promise<void> {
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url === 'https://claw.deepagens.com/api') {
+        return Promise.resolve(new Response(
+          JSON.stringify({ success: true, data: { display_name: '杰哥', avatar, api_key: 'sk-1' } }),
+          { status: 200 },
+        ))
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        code: true,
+        data: { total_used: used, total_available: remaining, unlimited_quota: unlimited },
+      }), { status }))
+    }))
+    await act(async () => { await controller.login('jiege', 'pw') })
+  }
+
+  it('renders the gateway identity and the used and remaining token counts', async () => {
+    const controller = new LoginStore('https://claw.deepagens.com/api', inertAdapter, dummyApi)
+    await signInWithTokens(controller, 12345, 987655, 200, false, 'https://claw.deepagens.com/a.png')
+    const { container } = render(<GatewayAccountSection close={() => {}} controller={controller} t={t} />)
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('https://claw.deepagens.com/a.png')
+    expect(screen.getByText('杰哥')).toBeDefined()
+    expect(screen.getByText('已登录网关')).toBeDefined()
+    await waitFor(() => { expect(screen.getByText('12,345')).toBeDefined() })
+    expect(screen.getByText('987,655')).toBeDefined()
+    expect(screen.getByText('已使用 token')).toBeDefined()
+    expect(screen.getByText('剩余 token')).toBeDefined()
+    expect(screen.getByRole('link', { name: '控制台' }).getAttribute('href')).toBe('https://claw.deepagens.com/console')
+    expect(screen.getByRole('link', { name: '充值' }).getAttribute('href')).toBe('https://claw.deepagens.com/console/topup')
+  })
+
+  it('shows an unlimited remaining quota instead of a zero count', async () => {
+    const controller = new LoginStore('https://claw.deepagens.com/api', inertAdapter, dummyApi)
+    await signInWithTokens(controller, 80, 0, 200, true)
+    render(<GatewayAccountSection close={() => {}} controller={controller} t={t} />)
+    await waitFor(() => { expect(screen.getByText('80')).toBeDefined() })
+    expect(screen.getByText('不限额')).toBeDefined()
+    expect(screen.queryByText('$')).toBeNull()
+  })
+
+  it('renders nothing while signed out', () => {
+    const controller = new LoginStore('https://claw.deepagens.com/api', inertAdapter, dummyApi)
+    const { container } = render(<GatewayAccountSection close={() => {}} controller={controller} t={t} />)
+    expect(container.childElementCount).toBe(0)
+  })
+
+  it('offers a retry affordance after a failed read and recovers on click', async () => {
+    const controller = new LoginStore('https://claw.deepagens.com/api', inertAdapter, dummyApi)
+    await signInWithTokens(controller, 12345, 987655, 500)
+    render(<GatewayAccountSection close={() => {}} controller={controller} t={t} />)
+    await waitFor(() => { expect(screen.getByRole('button', { name: '重新加载' })).toBeDefined() })
+    expect(screen.getByText('暂不可用')).toBeDefined()
+    // The retry path reads the same endpoint; the stub keeps answering 500,
+    // so the affordance stays and no count is invented.
+    fireEvent.click(screen.getByRole('button', { name: '重新加载' }))
+    await waitFor(() => { expect(screen.getByRole('button', { name: '重新加载' })).toBeDefined() })
+    expect(screen.queryByText('12,345')).toBeNull()
+  })
+})
+
 describe('SidebarAccount', () => {
   it('renders the avatar and name when signed in wide', async () => {
     const controller = new LoginStore('https://claw.deepagens.com/api', inertAdapter, dummyApi)
     await signIn(controller)
-    const { container } = render(<SidebarAccount wide controller={controller} t={t} />)
+    const { container } = render(<SidebarAccount
+      wide openSettings={() => {}} settingsOpen={false} openOnboarding={() => {}}
+      controller={controller} t={t}
+    />)
     expect(screen.getByText('杰哥')).toBeDefined()
     expect(container.querySelector('img')?.getAttribute('src')).toBe('https://claw.deepagens.com/a.png')
   })
@@ -134,7 +207,10 @@ describe('SidebarAccount', () => {
   it('falls back to the initial and hides the name in rail mode', async () => {
     const controller = new LoginStore('https://claw.deepagens.com/api', inertAdapter, dummyApi)
     await signIn(controller, { api_key: 'sk-1' })
-    const { container } = render(<SidebarAccount wide={false} controller={controller} t={t} />)
+    const { container } = render(<SidebarAccount
+      wide={false} openSettings={() => {}} settingsOpen={false} openOnboarding={() => {}}
+      controller={controller} t={t}
+    />)
     expect(screen.queryByText('jiege')).toBeNull()
     expect(container.querySelector('img')).toBeNull()
     expect(screen.getByText('J')).toBeDefined()
@@ -142,14 +218,41 @@ describe('SidebarAccount', () => {
 
   it('renders nothing while signed out', () => {
     const controller = new LoginStore('https://claw.deepagens.com/api', inertAdapter, dummyApi)
-    const { container } = render(<SidebarAccount wide controller={controller} t={t} />)
+    const { container } = render(<SidebarAccount
+      wide openSettings={() => {}} settingsOpen={false} openOnboarding={() => {}}
+      controller={controller} t={t}
+    />)
     expect(container.childElementCount).toBe(0)
+  })
+
+  it('opens the settings panel through the gear and keeps it off the menu', async () => {
+    const controller = new LoginStore('https://claw.deepagens.com/api', inertAdapter, dummyApi)
+    const openSettings = vi.fn()
+    await signIn(controller)
+    render(<SidebarAccount wide openSettings={openSettings} settingsOpen={false} openOnboarding={() => {}} controller={controller} t={t} />)
+    // The gear opens the panel directly; the profile menu carries no settings entry.
+    fireEvent.click(screen.getByRole('button', { name: '设置' }))
+    expect(openSettings).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menu')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '杰哥' }))
+    expect(screen.getByRole('menu')).toBeDefined()
+    expect(screen.queryByRole('menuitem', { name: '设置' })).toBeNull()
+  })
+
+  it('renders no gear in rail mode', async () => {
+    const controller = new LoginStore('https://claw.deepagens.com/api', inertAdapter, dummyApi)
+    await signIn(controller, { api_key: 'sk-1' })
+    render(<SidebarAccount
+      wide={false} openSettings={() => {}} settingsOpen={false} openOnboarding={() => {}}
+      controller={controller} t={t}
+    />)
+    expect(screen.queryByRole('button', { name: '设置' })).toBeNull()
   })
 
   it('closes the popped-open menu across a sign-out → sign-in cycle', async () => {
     const controller = new LoginStore('https://claw.deepagens.com/api', inertAdapter, dummyApi)
     await signIn(controller)
-    render(<SidebarAccount wide controller={controller} t={t} />)
+    render(<SidebarAccount wide openSettings={() => {}} settingsOpen={false} openOnboarding={() => {}} controller={controller} t={t} />)
     fireEvent.click(screen.getByRole('button', { name: '杰哥' }))
     expect(screen.getByRole('menu')).toBeDefined()
     fireEvent.click(screen.getByRole('menuitem', { name: '退出登录' }))

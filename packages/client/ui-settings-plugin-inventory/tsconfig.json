@@ -2,12 +2,16 @@
   "extends": "../../../tsconfig.base.client.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
   ],
   "references": [
+    {
+      "path": "../../util/package-manifest"
+    },
     {
       "path": "../../../vendor/cordis"
     },
@@ -15,16 +19,16 @@
       "path": "../../api/remotes/tsconfig.client.json"
     },
     {
-      "path": "../locale"
+      "path": "../locale/tsconfig.client.json"
     },
     {
-      "path": "../ui-settings"
+      "path": "../ui-settings/tsconfig.client.json"
     },
     {
       "path": "../ui-agent-preset"
     },
     {
-      "path": "../../preset/agent-presets"
+      "path": "../../preset/agent-preset-registry"
     },
     {
       "path": "../ui-primitives"
@@ -34,6 +38,12 @@
     },
     {
       "path": "../ui-slots"
+    },
+    {
+      "path": "../modules"
+    },
+    {
+      "path": "../store"
     }
   ]
 }

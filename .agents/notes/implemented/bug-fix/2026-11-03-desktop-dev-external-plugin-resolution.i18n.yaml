@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-11-03-desktop-dev-external-plugin-resolution.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-11-03-desktop-dev-external-plugin-resolution.md
+/agent-note-desktop-dev-bare-plugin-resolution-and-dev-update-checks:
+  en: c6fbf2a648146103
+  zh: ec5780e52e61a425
+/agent-note-desktop-dev-bare-plugin-resolution-and-dev-update-checks/problem:
+  en: 20b08d0e9d47a465
+  zh: 6c7198449ffb6b12
+/agent-note-desktop-dev-bare-plugin-resolution-and-dev-update-checks/decision:
+  en: 02b9eaa3150dcb5c
+  zh: 883be66cfe0a0c6d
+/agent-note-desktop-dev-bare-plugin-resolution-and-dev-update-checks/alternatives-considered:
+  en: cc4a643dbe91a412
+  zh: 3a2bb46674d6fd4f
+/agent-note-desktop-dev-bare-plugin-resolution-and-dev-update-checks/verification:
+  en: 352856f95a7a4320
+  zh: 4df770c071334b68
+/agent-note-desktop-dev-bare-plugin-resolution-and-dev-update-checks/consequences:
+  en: 8da764d5586ee842
+  zh: a08746e79f00c932

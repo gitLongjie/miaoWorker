@@ -2,6 +2,7 @@ import { composeError, Context } from '@deepseek-ai/cordis'
 import { isNonNullable, type Dict } from '@deepseek-ai/cosmokit'
 import { Entry, type EntryOptions } from './entry.ts'
 import { EntryGroup } from './group.ts'
+import { createResolve } from '../resolve.ts'
 
 /** Mutable tree of loader entries. Persistence is supplied by subclasses. */
 export abstract class EntryTree {
@@ -118,12 +119,21 @@ export abstract class EntryTree {
       // onImport.tracePromise.__proto__
       // internal.import
       info.offset += 3
+      // A packaged host owns the complete plugin set and provides
+      // `dshBareModuleBaseUrl`, the installed archive base: the Include rewrites
+      // `ctx.baseUrl` to the configuration directory, whose node_modules cannot
+      // resolve into the archive, so bare specifiers anchor there instead.
+      // Relative specifiers keep resolving beside the configuration file, and
+      // hosts that provide no base resolve exactly as before.
+      const bareBase = this.ctx.get('dshBareModuleBaseUrl') ?? this.ctx.baseUrl!
       if (this.ctx.loader.internal) {
-        return await this.ctx.loader.internal.import(name, this.ctx.baseUrl!, {})
+        return await this.ctx.loader.internal.import(name, bareBase, {})
       } else if (name.startsWith('.')) {
         return await import(/* @vite-ignore */new URL(name, this.ctx.baseUrl).href)
       } else {
-        return await import(/* @vite-ignore */name)
+        const resolve = await createResolve(bareBase)
+        const url = resolve ? resolve(name) : name
+        return await import(/* @vite-ignore */ url)
       }
     }, getOuterStack)
   }

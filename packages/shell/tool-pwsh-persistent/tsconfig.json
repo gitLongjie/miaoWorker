@@ -2,15 +2,36 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
-  "include": ["src"],
+  "include": [
+    "src"
+  ],
   "references": [
-    { "path": "../../../vendor/cordis" },
-    { "path": "../../../vendor/schemastery" },
-    { "path": "../../core/agent" },
-    { "path": "../../core/tools" },
-    { "path": "../../terminal/terminal" },
-    { "path": "../../util/timeout" }
+    {
+      "path": "../../../vendor/cordis"
+    },
+    {
+      "path": "../../../vendor/schemastery"
+    },
+    {
+      "path": "../../util/output-retention"
+    },
+    {
+      "path": "../../core/agent"
+    },
+    {
+      "path": "../../core/tools"
+    },
+    {
+      "path": "../../terminal/terminal"
+    },
+    {
+      "path": "../../util/timeout"
+    },
+    {
+      "path": "../../session/working-directory"
+    }
   ]
 }

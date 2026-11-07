@@ -5,7 +5,7 @@
  * @module @deepseek-ai/dsh-desktop/render/entry
  */
 
-import type { ClientTransportHooks } from '@deepseek-ai/dsh-client-connection'
+import type { ClientTransportHooks } from '@deepseek-ai/dsh-client-connection/client'
 import { createIpcFetch, createIpcStreamOpen, type IpcBridge } from './transport.ts'
 import { installTitleBar } from './title-bar.ts'
 import { installUpdateBadge } from './update-badge.ts'
@@ -27,20 +27,14 @@ ipc.on('dsh:notification:open-session', (payload) => {
   if (typeof payload === 'string') window.__DSH_OPEN_SESSION__?.(payload)
 })
 
-// The title bar defers its body mount and favicon lookup internally because
-// this script runs before the remaining head markup is parsed. The transport
-// below must stay synchronous — AppWebEntry reads it during boot.
-installTitleBar(document, ipc, () => {
-  const brandIcon = document.querySelector<HTMLLinkElement>('link[rel~="icon"]')?.getAttribute('href')
-  if (brandIcon === null || brandIcon === undefined) {
-    throw new Error('desktop render: OEM favicon link is missing')
-  }
-  return brandIcon
-})
+// The title bar defers its body mount internally because this script runs
+// before the body is parsed. The transport below must stay synchronous —
+// AppWebEntry reads it during boot.
+installTitleBar(document, ipc)
 installUpdateBadge(document, ipc)
 
 const transport: ClientTransportHooks = {
-  fetch: (input: URL, init: RequestInit) => createIpcFetch(ipc)(input, init),
+  fetch: (input, init) => createIpcFetch(ipc)(input, init),
   openStream: createIpcStreamOpen(ipc),
   loadBundle: async (url: string) => {
     const started = performance.now()

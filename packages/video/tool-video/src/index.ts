@@ -10,7 +10,7 @@
 import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { copyFile, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, basename } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -62,9 +62,10 @@ const ASSET_SCHEMA = {
     description: { type: 'string' },
     prompt: {
       type: 'string',
-      description: 'Agent-authored canonical visual identity block. For characters, include observable age impression, body, face, hair, makeup, gaze, mouth/expression, clothing, shoes, accessories, posture, and negative constraints; the user does not need to write this prompt.',
+      description: 'Agent-authored canonical visual identity block. For characters, include observable age impression, body, face, hair, makeup, gaze, mouth/expression, clothing, shoes, accessories, posture, and negative constraints; the user does not need to write this prompt. For scenes, record fixed doors/windows, connected passages, furnishings, light sources, spatial directions, and travel routes; derive every camera view from this same layout.',
     },
     reference: { type: 'string' },
+    referenceLayout: { type: 'string', enum: ['four-column'] },
     sheet: { type: 'string' },
   },
 } as const
@@ -264,6 +265,7 @@ const ASSET_IMAGE_SCHEMA = {
     kind: { type: 'string', required: true },
     image: { type: 'string' },
     attachment: IMAGE_ATTACHMENT_SCHEMA,
+    referenceLayout: { type: 'string', enum: ['four-column'] },
     sheet: { type: 'string' },
     sheetAttachment: IMAGE_ATTACHMENT_SCHEMA,
     state: { type: 'string', required: true, enum: ['generated', 'skipped', 'failed'] },
@@ -281,6 +283,7 @@ const LIBRARY_ASSET_SCHEMA = {
     description: { type: 'string' },
     prompt: { type: 'string' },
     reference: { type: 'string' },
+    referenceLayout: { type: 'string', enum: ['four-column'] },
     sheet: { type: 'string' },
   },
 } as const
@@ -572,55 +575,37 @@ function styleSuffix(style: string | undefined): string {
 }
 
 /**
- * Full-body character reference prompt: the identity anchor every keyframe of this character is
- * conditioned on, and the single-person image the API documents for `subject_reference`.
+ * Four-column character design prompt. Single-subject consumers use the front-column crop.
  * @param asset - the character asset.
  * @param style - the plan's one-line style directive, when it has one.
  * @returns the image-01 prompt.
  */
 function buildCharacterReferencePrompt(asset: PlanAsset, style: string | undefined): string {
   return [
-    '单人全身角色参考图，single full-body character reference。',
-    '人物正面站立，头顶到鞋底完整入画，完整展示发型、脸部、上衣、裤子、手部、鞋子和所有配饰。',
-    '人物居中，双脚完整可见，头顶和脚底留出边距，不裁切。',
-    `角色外观：${assetBlock(asset)}。`,
-    '纯白背景 plain white background，柔和均匀的棚拍光，清晰展示服装结构、颜色、材质、褶皱、鞋子和身体比例。',
-    '只出现一个人物。不要半身像，不要特写，不要三视图，不要多个角色，不要拼贴，不要人物重叠，不要文字、水印、logo。',
+    '输出一张横向 16:9 的角色设定板，不是单人海报。画布必须被三条竖直分隔线分成四个等宽、都被内容填满的独立面板；四个面板必须同时出现在同一张图片中。',
+    '四栏顺序摘要：正面全身、左侧面全身、背面全身、正面面部特写。',
+    '从左到右严格标记并绘制：PANEL 1 FRONT FULL BODY 正面全身（full-body）；PANEL 2 LEFT SIDE FULL BODY 左侧面全身（full-body）；PANEL 3 BACK FULL BODY 背面全身（full-body）；PANEL 4 FACE CLOSE-UP 正面面部特写。',
+    '前三个面板各自从头顶到鞋底完整入画，头顶到鞋底必须可见，双脚可见，人物不能跨越面板分隔线；第四个面板只做清晰面部特写。四个面板缺一不可，不能留白。',
+    '禁止输出单一居中的正面人物、3:4 竖图、单视图、半身像（不要半身像）、只有一栏、空白栏、重复正面视图或把四个视图叠在同一位置。',
+    '第四栏清晰展示脸型、下颌线、眼神、眼线和嘴角表情，不要美化成另一张脸。',
+    `四栏共享同一角色外观：${assetBlock(asset)}。`,
+    '各视角保持相同年龄、体型、发型、服装结构、颜色、材质、鞋子和所有配饰，正侧背对应同一个人。',
+    '纯白背景，柔和均匀棚拍光，四栏边界清楚，不重叠，不跨栏，不额外增加人物、视角或图片文件，不要文字、水印、logo。',
     styleSuffix(style),
   ].join('')
 }
 
 /**
- * Turnaround sheet prompt for a character whose full-body reference already exists: front, side,
- * and back views of that same design. The sheet is drawn from the reference as its subject, so the
- * views cannot disagree with the anchor about hair, wardrobe, shoes, or proportions, and it
- * documents the design without ever conditioning a keyframe or a clip.
- * @param asset - the character asset.
- * @param style - the plan's one-line style directive, when it has one.
- * @returns the image-01 prompt.
- */
-function buildCharacterSheetPrompt(asset: PlanAsset, style: string | undefined): string {
-  return [
-    '同一人物的角色三视图设定表，character turnaround sheet：正面、侧面、背面三个视角横向并排。',
-    '三个视角是同一个人、同一套衣服、同一发型、同样的身高和体型比例，发型、五官、服装结构、鞋子细节逐一对应。',
-    `角色外观：${assetBlock(asset)}。`,
-    '每个视角都是头顶到鞋底完整入画的全身，人物站直、双臂自然下垂，三个视角间距均匀、互不遮挡。',
-    '纯白背景 plain white background，柔和均匀的棚拍光，侧面展示轮廓，背面展示后背的发型与衣服结构。',
-    '画面中只出现这一个角色的三个视角，不要第四个人，不要拼贴边框，不要文字、标注、水印、logo。',
-    styleSuffix(style),
-  ].join('')
-}
-
-/**
- * Still prompt for a scene or prop anchor: a reusable establishing shot without people, or a
- * neutral prop reference.
+ * Still prompt for a scene or prop asset.
  * @param asset - the scene or prop asset.
  * @param style - the plan's one-line style directive, when it has one.
- * @returns the image-01 prompt.
+ * @returns the image generation prompt.
  */
 function buildStillPrompt(asset: PlanAsset, style: string | undefined): string {
   if (asset.kind === 'scene') {
-    return `固定机位广角镜头，清晰的建立镜头，${assetBlock(asset)}，画面中没有任何人物，空场景，电影质感${styleSuffix(style)}`
+    return `固定机位广角镜头，清晰的建立镜头，${assetBlock(asset)}，画面中没有任何人物，空场景。`
+      + '单张透视场景主图，不是四宫格、拼贴或平面图；遵循固定空间布局，保持门窗、通道、主要陈设与光源的位置关系，保留可通行的动作路线。'
+      + `电影质感${styleSuffix(style)}`
   }
   return `道具参考图，${assetBlock(asset)}，纯白背景，柔和均匀的光线，电影质感${styleSuffix(style)}`
 }
@@ -661,8 +646,20 @@ function buildSegmentRequest(segment: VideoSegment, plan: VideoPlan, keyframeBas
       inputs: [...request.inputs, { type: 'image', url: keyframePath, role: 'first_frame' }],
     }
   }
+  const frameInputs = request.inputs.filter((input): input is Extract<SegmentInput, { type: 'image' }> =>
+    input.type === 'image' && (input.role === 'first_frame' || input.role === 'last_frame'))
+  const hasFrameInputs = frameInputs.length > 0
   const hasReferenceInputs = request.inputs.some(input =>
     input.type === 'video' || input.type === 'audio' || (input.type === 'image' && input.role === 'reference_image'))
+  if (hasFrameInputs) {
+    const textInput = request.inputs.find((input): input is Extract<SegmentInput, { type: 'text' }> => input.type === 'text')
+    return { ...request, ratio: 'adaptive', inputs: [
+      ...(textInput !== undefined ? [textInput] : []),
+      ...frameInputs,
+      ...(keyframePath !== undefined && !frameInputs.some(input => input.role === 'first_frame')
+        ? [{ type: 'image' as const, url: keyframePath, role: 'first_frame' as const }] : []),
+    ] }
+  }
   if (!hasReferenceInputs && assets.length === 0) return request
   const labeled: Array<{ input: SegmentInput; label: string }> = []
   const counters = { picture: 0, video: 0, audio: 0 }
@@ -765,13 +762,17 @@ function validateContinuity(segments: readonly VideoSegment[], assets: readonly 
     // Naming the same character is not continuity when the two shots name different rooms: that is
     // the "same person, somewhere else" jump this rule exists to catch.
     const changedPlace = previousSets.length > 0 && currentSets.length > 0 && !carriedSet
+    const physicalTransition = current.continuity === 'continue'
+      && previous.endState !== undefined && previous.endState.trim().length > 0
+      && current.startState?.trim() === previous.endState.trim()
+      && current.event !== undefined && current.event.trim().length > 0
     const carriedCharacter = namedInCurrent.some(asset =>
       asset.kind === 'character' && namedInPrevious.includes(asset))
-    if (carriedCharacter && !changedPlace) continue
+    if (carriedCharacter && (!changedPlace || physicalTransition)) continue
     throw new Error(
       `segments ${previous.id} and ${current.id} share no character or set, so the two clips have nothing in common. `
       + (changedPlace
-        ? `${previous.id} is in ${previousSets.map(asset => asset.name).join('/')} and ${current.id} moves to ${currentSets.map(asset => asset.name).join('/')} without declaring the cut. `
+        ? `${previous.id} is in ${previousSets.map(asset => asset.name).join('/')} and ${current.id} moves to ${currentSets.map(asset => asset.name).join('/')}. For continuous movement, declare continue, copy the previous end_state into start_state, and describe the physical route in event. `
         : `Name the character or set of ${previous.id} that carries over into ${current.id}`)
       + `Open ${current.id} with "切至：<场景名>" when the storyboard really moves somewhere else.`,
     )
@@ -840,6 +841,7 @@ const MAX_MULTI_SHOT_SECONDS = 15
 function buildMultiShotPrompt(plan: VideoPlan): string {
   const { goal, segments } = plan
   const parts: string[] = []
+  parts.push('integrated_multimodal_description:')
   parts.push(`Story: ${goal}`)
   parts.push('The supplied image is the opening frame of the whole film. Animate from its starting state; do not use a later action or a montage as the opening.')
   const assets = (plan.assets ?? []).filter(asset => segments.some(segment => segment.assetIds !== undefined
@@ -864,6 +866,9 @@ function buildMultiShotPrompt(plan: VideoPlan): string {
   })
   parts.push('')
   parts.push('Use clean hard cuts between shot angles, no dissolves. An angle change does not change place or time. Continue from each preceding end state; do not repeat completed actions. A cut changes place, not established facts; time jumps and flashbacks follow their stated times. Preserve identities, wardrobe, prop ownership, set layout, and lighting unless the timeline explicitly changes them.')
+  parts.push('For every continue transition, show the complete physical action from the preceding end state. When moving between spaces, show the exit, threshold crossing, travel direction, entry, and arrival. Do not teleport or omit walking, object contact, or handoffs. Preserve screen direction and prop ownership across angle changes. A new location name alone does not describe a route.')
+  parts.push('overall_soundscape: Preserve location-specific room tone and action sounds continuously across the timeline; footsteps, door movement, and threshold contact must occur at the corresponding visual moments.')
+  parts.push('non_diegetic_music: N/A unless the story explicitly requests music.')
   parts.push('No text, subtitles, logos or watermarks of any kind unless the user requests them.')
   return parts.join('\n')
 }
@@ -934,6 +939,22 @@ function buildMultiShotRequest(plan: VideoPlan, outputDir: string): SegmentReque
   }
 }
 
+/**
+ * Guidance injected by the direct `/video` command before the model starts planning. The tool
+ * validates fields and provider limits, while this workflow makes the narrative decisions that
+ * cannot be inferred from prose validation: a short screenplay beat sheet, physical action
+ * coverage, and a review gate before rendering.
+ */
+const STORYBOARD_WORKFLOW_GUIDANCE = [
+  '先做剧本分析，再做分镜：把用户需求归纳为故事目标、角色与身份锚点、地点/时间、道具归属、镜头风格和声音要求。不要直接从一句话跳到 render。',
+  '时长不决定镜头数量：用户未要求切镜且动作可连续拍摄时，优先一个完整 15 秒长镜头（或用户指定时长），不要机械拆成 3×5 秒或 2×5 秒。节拍是动作顺序，不等于切镜；一个长镜头可以连续完成多个动作节拍。确需换机位时按剧情分配不等长镜头，并在 ≤15 秒内合并为一次 multi_shot 请求。保留用户明确指定的时长和镜头数；8 秒保持 8 秒，15 秒保持 15 秒，不擅自压缩或扩长。',
+  '把每个节拍转换为可执行分镜：写清机位、开场状态、一个动作事件、收尾状态、空间路径、人物朝向、左右手和道具归属，并加入环境声/动作音。抽象结果（例如“到了走廊”）必须拆成出口、跨门槛、沿路径移动、到达。',
+  '场景先定空间再定机位：由导演自动把固定门窗、通道连接、主要陈设、光源、空间方向和行走路线写入场景 asset.prompt。涉及出入门或跨区域移动时先展示文字/示意布局，标出机位和路线，再生成一张无人物场景主图；不默认生成四面图。各机位必须从同一布局派生，在 camera 写清摄影机位置、朝向和视野，在 start_state/end_state 写清人物位置与移动方向，不能独立重设计场景。',
+  '只为实际换向的分镜补机位预览：用 video_keyframes 显式选择 segment_ids；无人镜头自动使用所选场景主图作参考，有角色时优先使用角色图，场景布局由文字约束，当前图片接口一次只用一个参考源。multi_shot 后续预览不会逐张约束视频，只有第一镜开场图参与整片条件；严禁把布局图或多宫格作为视频首帧。需要每镜图片约束时选 per_segment，并保留实际尾帧衔接。渲染前核对门窗、通道、机位轴线、人物朝向及出口到入口的完整路线，冲突先修分镜或预览。',
+  '分镜审查门禁：后一镜 start_state 必须复用前一镜 end_state 的可观察事实；continue 不得用 cut 省略路程；同一地点的连续动作不得重置人物、道具或光线。发现状态不一致时先修改 video_plan，不得带病 render。',
+  '只在分镜和开场图通过审查后渲染。渲染完成后检查实际时长、镜头跳跃、动作重复、人物/道具变化和声音连续性，再交付成片。',
+].join('\n')
+
 async function readPlan(outputDir: string, planId: string): Promise<VideoPlan> {
   const file = artifactPath(plansDir(outputDir), `${planId}.json`)
   let raw: string
@@ -973,6 +994,7 @@ function copyAsset(asset: PlanAsset): PlanAsset {
     ...(asset.prompt !== undefined ? { prompt: asset.prompt } : {}),
     ...(asset.reference !== undefined ? { reference: asset.reference } : {}),
     ...(asset.sheet !== undefined ? { sheet: asset.sheet } : {}),
+    ...(asset.referenceLayout !== undefined ? { referenceLayout: asset.referenceLayout } : {}),
   }
 }
 
@@ -997,7 +1019,7 @@ async function importLibraryAssets(outputDir: string, references: readonly strin
 
 /**
  * Merge library imports with the assets this call authored, keyed by name — the name a storyboard
- * references; an authored asset replaces the imported record of the same name.
+ * references; authored fields update the imported record of the same name.
  * @param imported - assets attached from the project library.
  * @param authored - assets written in this call.
  * @returns the merged asset list.
@@ -1005,7 +1027,7 @@ async function importLibraryAssets(outputDir: string, references: readonly strin
 function mergeAssetsByName(imported: readonly PlanAsset[], authored: readonly PlanAsset[]): PlanAsset[] {
   const byName = new Map<string, PlanAsset>()
   for (const asset of imported) byName.set(asset.name, asset)
-  for (const asset of authored) byName.set(asset.name, asset)
+  for (const asset of authored) byName.set(asset.name, mergeAsset(byName.get(asset.name), asset))
   return [...byName.values()]
 }
 
@@ -1022,7 +1044,7 @@ function mergePlanAssets(prior: readonly PlanAsset[], authored: readonly PlanAss
   const order = prior.map(asset => asset.id)
   for (const asset of authored) {
     if (!byId.has(asset.id)) order.push(asset.id)
-    byId.set(asset.id, asset)
+    byId.set(asset.id, mergeAsset(byId.get(asset.id), asset))
   }
   return order.flatMap((id) => {
     const asset = byId.get(id)
@@ -1030,8 +1052,39 @@ function mergePlanAssets(prior: readonly PlanAsset[], authored: readonly PlanAss
   })
 }
 
+/**
+ * Preserve omitted asset fields; image layout and legacy sheets belong to their original reference.
+ * @param prior - existing asset, if any.
+ * @param authored - supplied asset fields.
+ * @returns the updated asset without inherited metadata for a replacement image or different kind.
+ */
+function mergeAsset(prior: PlanAsset | undefined, authored: PlanAsset): PlanAsset {
+  if (prior === undefined || prior.kind !== authored.kind) return authored
+  if (authored.reference !== undefined && authored.reference !== prior.reference) {
+    const { referenceLayout: _layout, sheet: _sheet, ...retained } = prior
+    return { ...retained, ...authored }
+  }
+  return { ...prior, ...authored }
+}
+
 /** Run one ffmpeg invocation with a bounded buffer. */
 const runFfmpeg = promisify(execFile)
+
+/**
+ * Derive the single front-facing subject from a generated four-column character design.
+ * @param asset - the approved character reference and its recorded layout.
+ * @param outputDir - directory owning derived conditioning images.
+ * @param signal - cancellation for the image crop.
+ * @returns the original reference or a local front-column crop; never another generated identity.
+ */
+async function characterSubjectImage(asset: AnchoredAsset, outputDir: string, signal: AbortSignal): Promise<string> {
+  if (asset.referenceLayout !== 'four-column') return asset.reference
+  const directory = join(outputDir, 'assets', 'conditioning')
+  await mkdir(directory, { recursive: true })
+  const target = join(await mkdtemp(join(directory, 'subject-')), 'front.png')
+  await runFfmpeg('ffmpeg', ['-y', '-i', asset.reference, '-vf', 'crop=iw/4:ih:0:0', '-frames:v', '1', target], { signal })
+  return target
+}
 
 /** Extract the final frame of one rendered segment, for chaining the next shot onto it.
  * @param file - the rendered segment.
@@ -1043,32 +1096,36 @@ async function extractLastFrame(file: string, target: string): Promise<string | 
   try {
     await runFfmpeg('ffmpeg', ['-y', '-sseof', '-0.2', '-i', file, '-frames:v', '1', '-q:v', '2', target])
     return target
-  } catch {
-    // No decodable tail frame: the next shot renders unchained instead of failing the whole run.
+  } catch (error: unknown) {
+    // The chain owner reports the missing frame and stops before submitting a continued shot.
+    void error
     return undefined
   }
 }
 
 /**
- * Attach the previous shot's final frame to one request. A shot with no reference material takes it
- * as `first_frame`, the strongest continuity the backend offers; a reference-conditioned shot gets
- * it appended to its reference set, because frame and reference conditioning cannot mix there.
+ * Attach the previous shot's actual final frame as first_frame, replacing loose references because
+ * H3 cannot mix reference conditioning and frame conditioning in one request.
  * @param request - the built segment request.
  * @param chainFrame - the previous shot's last frame, when one was extracted.
+ * @param segment - the authored shot, including an optional target last frame.
  * @returns the request with the chained frame attached.
  */
-function withChainFrame(request: SegmentRequest, chainFrame: string | undefined): SegmentRequest {
+function withChainFrame(request: SegmentRequest, chainFrame: string | undefined, segment: VideoSegment): SegmentRequest {
   if (chainFrame === undefined) return request
   // The previous shot's final frame is the strongest anchor there is: same face, same wardrobe,
   // same light, one frame apart. It replaces the reference images rather than joining them, because
   // the backend cannot condition on a frame and loose references in the same request.
   const text = request.inputs
     .filter((input): input is { type: 'text'; text: string } => input.type === 'text')
-    .map(input => ({ type: 'text' as const, text: input.text.replace(/\nReferences: .*$/u, '') }))
+    .map(input => ({ type: 'text' as const, text: `${input.text.replace(/\nReferences: .*$/u, '')}\nThe supplied image is the actual final frame of the preceding clip and the first frame at 0 seconds of this clip. Continue the unfinished movement from this exact pose, position, wardrobe, and prop ownership. Show the physical route to the destination; do not restart or teleport.` }))
   return {
     ...request,
     ratio: 'adaptive',
-    inputs: [...text, { type: 'image', url: chainFrame, role: 'first_frame' }],
+    inputs: [...text, { type: 'image', url: chainFrame, role: 'first_frame' },
+      ...(segment.references ?? []).filter(reference => reference.type === 'image' && reference.role === 'last_frame')
+        .map(reference => ({ type: 'image' as const, url: reference.source, role: 'last_frame' as const })),
+    ],
   }
 }
 
@@ -1102,13 +1159,13 @@ function chainJobHooks(
         )
         const { target, ref } = await ctx.h3Video.submit(
           backend ?? segment.backend,
-          withChainFrame(base, chainFrame),
+          withChainFrame(base, chainFrame, segment),
           controller.signal,
         )
         const status = await ctx.h3Video.poll(target, ref, controller.signal)
         if (status.state !== 'succeeded') {
           chunks.push(`[failed] ${segment.id}: ${status.state}`)
-          return { status: 'failed', detail: `${segment.id} ${status.state}`, output: chunks.join('\n') }
+          return { status: 'failed', detail: `${segment.id} ${status.state}`, result: chunks.join('\n') }
         }
         const canonical = canonicalSegmentFile(outputDir, plan.id, segment.id)
         await mkdir(dirname(canonical), { recursive: true })
@@ -1119,20 +1176,23 @@ function chainJobHooks(
         }
         chunks.push(`[succeeded] ${segment.id} -> ${canonical}`)
         const next = segments[index + 1]
-        chainFrame = next === undefined
+        chainFrame = next === undefined || (next.continuity !== undefined && next.continuity !== 'continue')
           ? undefined
           : await extractLastFrame(canonical, join(keyframesDir(outputDir), `${plan.id}-${next.id}-chain.png`))
+        if (next !== undefined && (next.continuity === undefined || next.continuity === 'continue') && chainFrame === undefined) {
+          throw new Error(`cannot continue ${next.id}: extracting the actual final frame of ${segment.id} failed; the next shot was not submitted`)
+        }
       } catch (error: unknown) {
         if (controller.signal.aborted) {
           chunks.push(`[killed] ${segment.id}`)
-          return { status: 'killed', detail: 'cancelled', output: chunks.join('\n') }
+          return { status: 'killed', detail: 'cancelled', result: chunks.join('\n') }
         }
         const message = error instanceof Error ? error.message : String(error)
         chunks.push(`[failed] ${segment.id}: ${message}`)
-        return { status: 'failed', detail: message, output: chunks.join('\n') }
+        return { status: 'failed', detail: message, result: chunks.join('\n') }
       }
     }
-    return { status: 'completed', detail: `${segments.length} chained shot(s)`, output: chunks.join('\n') }
+    return { status: 'completed', detail: `${segments.length} chained shot(s)`, result: chunks.join('\n') }
   })()
   return {
     cancel: () => { controller.abort() },
@@ -1338,22 +1398,22 @@ function renderJobHooks(
           await copyFile(status.localFile, canonical)
         }
         chunks.push(`[succeeded] ${segment.id} -> ${canonical}`)
-        return { status: 'completed', detail: segment.id, output: chunks.join('\n') }
+        return { status: 'completed', detail: segment.id, result: chunks.join('\n') }
       }
       if (status.state === 'failed') {
         chunks.push(`[failed] ${segment.id}: ${status.reason}`)
-        return { status: 'failed', detail: status.reason, output: chunks.join('\n') }
+        return { status: 'failed', detail: status.reason, result: chunks.join('\n') }
       }
       chunks.push(`[failed] ${segment.id}: poll returned non-terminal state ${status.state}`)
-      return { status: 'failed', detail: `unexpected poll state ${status.state}`, output: chunks.join('\n') }
+      return { status: 'failed', detail: `unexpected poll state ${status.state}`, result: chunks.join('\n') }
     } catch (error: unknown) {
       if (controller.signal.aborted) {
         chunks.push(`[killed] ${segment.id}`)
-        return { status: 'killed', detail: 'cancelled', output: chunks.join('\n') }
+        return { status: 'killed', detail: 'cancelled', result: chunks.join('\n') }
       }
       const message = error instanceof Error ? error.message : String(error)
       chunks.push(`[failed] ${segment.id}: ${message}`)
-      return { status: 'failed', detail: message, output: chunks.join('\n') }
+      return { status: 'failed', detail: message, result: chunks.join('\n') }
     }
   })()
   return {
@@ -1377,7 +1437,7 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'video_plan',
-    description: 'Structure the current conversation request into a versioned storyboard plan and persist it. Before calling this tool, the agent must analyze each character from the story and any supplied reference image, then write an observable identity anchor in the asset prompt: age impression, build, face shape, hair, makeup, gaze, mouth/expression, wardrobe, shoes, accessories, posture, and explicit negative constraints. The agent owns this prompt writing; the user only describes the story and characters. This tool validates and stores the plan. Pass an existing plan_id to revise it.',
+    description: 'Structure the current conversation request into a versioned storyboard plan and persist it. Duration does not determine shot count. Prefer one continuous shot for the requested duration when no cuts are requested and the action permits it; a 15-second story can be one 15-second segment. Action beats do not require cuts. Use multiple shots only when the story or user requires them, with story-driven durations in one multi_shot request of at most 15 seconds. Use per_segment only when real tail-frame chaining, independent closing frames, different materials, or different routing is required. The agent must first analyze the screenplay into short observable beats, then write an executable action sequence and concrete start/end states for every shot; a continuous route must include exit, threshold crossing, travel direction, entry, and arrival. Before calling this tool, the agent must analyze each character from the story and any supplied reference image, then write an observable identity anchor in the asset prompt: age impression, build, face shape, hair, makeup, gaze, mouth/expression, wardrobe, shoes, accessories, posture, and explicit negative constraints. The agent owns this prompt writing; the user only describes the story and characters. This tool validates and stores the plan. Pass an existing plan_id to revise it.',
     parameters: {
       goal: { type: 'string', required: true, description: 'One-line goal the plan serves.' },
       plan_id: { type: 'string', description: 'Existing plan id to revise; omit to create a new plan.' },
@@ -1483,6 +1543,7 @@ export function apply(ctx: Context): void {
         ...asset.prompt !== undefined ? { prompt: asset.prompt } : {},
         ...asset.reference !== undefined ? { reference: asset.reference } : {},
         ...asset.sheet !== undefined ? { sheet: asset.sheet } : {},
+        ...asset.referenceLayout !== undefined ? { referenceLayout: asset.referenceLayout } : {},
       }))
       const imported = await importLibraryAssets(outputDir, args.library_assets ?? [])
       const authoredAssets = mergeAssetsByName(imported, authored)
@@ -1559,10 +1620,11 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'video_keyframes',
-    description: 'Generate stills using the configured image provider. multi_shot defaults to one opening frame showing the first shot start_state before its event; explicitly selected later stills are storyboard previews and do not condition the video. per_segment defaults to all shots. A named or explicitly selected character supplies one full-body reference image; local generation requires a reference-image workflow. Present the images for confirmation before rendering.',
+    description: 'Generate stills using the configured image provider. multi_shot defaults to one opening frame showing the first shot start_state before its event; explicitly selected later stills are storyboard previews and do not condition the video. per_segment defaults to all shots. A named or explicitly selected character supplies one full-body reference image; local generation requires a reference-image workflow. Uncast shots use the first selected scene master as the single image reference; character shots prioritize character identity and describe scene layout in text. Use asset_ids to select the intended scene. Layout diagrams and collages are review material, never video first frames. Present the images for confirmation before rendering.',
     parameters: {
       plan_id: { type: 'string', required: true, description: 'Plan id from video_plan.' },
       segment_ids: { type: 'array', items: { type: 'string' }, description: 'Shot ids to draw; defaults to the opening shot for multi_shot, or every shot for per_segment.' },
+      frame: { type: 'string', enum: ['opening', 'closing'], description: 'Defaults to opening. In per_segment, closing draws end_state into a separate target image; pass its returned path as image/last_frame in video_plan before rendering. It never replaces the actual preceding tail frame.' },
       seed: {
         type: 'integer',
         description: 'Image seed for this batch; defaults to the plan seed, so re-running reproduces the same stills. Pass another value to try a different take.',
@@ -1570,7 +1632,7 @@ export function apply(ctx: Context): void {
       identity: {
         type: 'string',
         enum: ['auto', 'text', 'portrait'],
-        description: 'How the still is conditioned on the cast. "auto" (default) keeps the face, clothing, shoes, and body proportions when the shot names a character the plan carries an image for, by editing that full-body reference into the scene; open shots draw from text alone. "text" forces text-to-image; "portrait" forces the reference edit even when no character is named.',
+        description: 'How the still is conditioned on the cast. "auto" (default) keeps the face, clothing, shoes, and body proportions when the shot names a character the plan carries an image for, by editing that full-body reference into the scene; uncast shots use the first selected scene reference to derive the requested viewpoint; without one they draw from text alone. "text" forces text-to-image; "portrait" forces the reference edit even when no character is named.',
       },
     },
     output: imageOutput(KEYFRAME_VALUE_SCHEMA, keyframeContent),
@@ -1578,6 +1640,8 @@ export function apply(ctx: Context): void {
       const outputDir = ctx.h3Video.outputDir
       const plan = await readPlan(outputDir, args.plan_id)
       const seed = args.seed ?? plan.seed
+      const closing = args.frame === 'closing'
+      if (closing && plan.mode === 'multi_shot') throw new Error('closing targets require per_segment; multi_shot uses only its opening frame')
       const selected = args.segment_ids === undefined
         ? plan.mode === 'multi_shot' ? plan.segments.slice(0, 1) : plan.segments
         : args.segment_ids.map((id) => {
@@ -1600,18 +1664,29 @@ export function apply(ctx: Context): void {
         const subject = assets.find(asset => asset.kind === 'character')
         const keepFace = args.identity === 'portrait'
           || (args.identity !== 'text' && subject !== undefined)
+        const scene = args.identity !== 'text' && !keepFace
+          ? assets.find(asset => asset.kind === 'scene') : undefined
         try {
+          if (closing && !segment.endState?.trim()) {
+            throw new Error(`segment ${segment.id}: end_state is required for a closing target`)
+          }
+          const sceneGuidance = scene === undefined ? ''
+            : '\n根据场景主参考图生成指定机位的单张透视画面，遵循同一固定布局；门窗、通道、陈设、光源不能随换向移动，不新增人物。不是平面图、多宫格或拼贴。'
           const generated = await ctx.h3Video.keyframe({
-            prompt: plan.mode === 'multi_shot'
-              ? `${segmentPrompt({ ...segment, prompt: segment.startState ?? segment.prompt }, plan, assets, keepFace)}\nDraw one still at this shot's starting state, before its event begins. No montage, timeline, or event outcome.`
-              : segmentPrompt(segment, plan, assets, keepFace),
+            prompt: closing
+              ? `${segmentPrompt({ ...segment, prompt: segment.endState ?? segment.prompt }, plan, assets, keepFace)}\nDraw one scene still at this shot's end_state. No columns or collage.${sceneGuidance}`
+              : plan.mode === 'multi_shot'
+                ? `${segmentPrompt({ ...segment, prompt: segment.startState ?? segment.prompt }, plan, assets, keepFace)}\nDraw one still at this shot's starting state, before its event begins. No montage, timeline, or event outcome. Render one scene, not character design columns.${sceneGuidance}`
+                : segmentPrompt(segment, plan, assets, keepFace) + sceneGuidance,
             ratio: keyframeRatio(segment.ratio),
             ...(seed !== undefined ? { seed } : {}),
             // The reference edit redraws the whole frame around the approved identity, so the still
             // keeps the character and the shot's own scene.
-            ...(keepFace && subject !== undefined ? { subjectReference: subject.reference } : {}),
+            ...(keepFace && subject !== undefined
+              ? { subjectReference: await characterSubjectImage(subject, outputDir, exec.signal) }
+              : scene !== undefined ? { subjectReference: scene.reference } : {}),
           }, exec.signal)
-          const base = imageArtifactBase(keyframesDir(outputDir), plan.id, segment.id)
+          const base = imageArtifactBase(keyframesDir(outputDir), plan.id, closing ? `${segment.id}-closing` : segment.id)
           const target = `${base}${extname(generated)}`
           await mkdir(dirname(target), { recursive: true })
           await rename(generated, target)
@@ -1662,6 +1737,7 @@ export function apply(ctx: Context): void {
         ...asset.prompt !== undefined ? { prompt: asset.prompt } : {},
         ...asset.reference !== undefined ? { reference: asset.reference } : {},
         ...asset.sheet !== undefined ? { sheet: asset.sheet } : {},
+        ...asset.referenceLayout !== undefined ? { referenceLayout: asset.referenceLayout } : {},
       }))
       for (const asset of assets) {
         if (asset.reference !== undefined) {
@@ -1723,10 +1799,10 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'video_asset_images',
-    description: 'Generate the anchor images for plan assets that need them. The agent analyzes the story and reference material before this call and stores the resulting character identity prompt in asset.prompt; the user does not hand-write image prompts. A character gets one 3:4 full-body reference image — head to shoes fully visible — plus a front/side/back turnaround sheet drawn from that reference, so the design records every angle while every keyframe keeps conditioning on the single reference. Scenes get a reusable establishing shot without people; props get a neutral reference image. Images are saved under outputDir/assets and recorded on the plan; pass regenerate with a new seed to try another take.',
+    description: 'Generate the anchor images for plan assets that need them. The agent analyzes the story and reference material before this call and stores the resulting character identity prompt in asset.prompt; the user does not hand-write image prompts. A character gets exactly one 16:9 four-column design image: front, side, and back full-body views (head to shoes visible), plus a face close-up. Single-subject keyframes use a crop of its front column, never a second generated identity. Scenes get a reusable establishing shot without people; props get a neutral reference image. Existing character portraits without a four-column design are upgraded using the portrait as identity reference. Images are saved under outputDir/assets and recorded on the plan; pass regenerate with a new seed to try another take. No separate turnaround file is generated; the four views share one image.',
     parameters: {
       plan_id: { type: 'string', required: true, description: 'Plan id from video_plan.' },
-      asset_ids: { type: 'array', items: { type: 'string' }, description: 'Asset ids to generate; defaults to every asset without a reference.' },
+      asset_ids: { type: 'array', items: { type: 'string' }, description: 'Asset ids to generate; defaults to missing references and characters without a four-column design. Existing character portraits condition their replacement design.' },
       regenerate: {
         type: 'boolean',
         description: 'Regenerate the selected assets even when they already carry a reference image, replacing it on the plan.',
@@ -1744,12 +1820,8 @@ export function apply(ctx: Context): void {
       const assetIds = args.asset_ids
       const scoped = assetIds === undefined ? allAssets : allAssets.filter(asset => assetIds.includes(asset.id))
       const regenerate = args.regenerate === true
-      // One reference image per asset, plus a turnaround sheet for a character. A character that
-      // already carries a reference but no sheet is selected so an ordinary call backfills the
-      // sheet without redrawing the reference.
-      const needsWork = (asset: PlanAsset): boolean => regenerate
-        || asset.reference === undefined
-        || (asset.kind === 'character' && asset.sheet === undefined)
+      const needsWork = (asset: PlanAsset): boolean => regenerate || asset.reference === undefined
+        || (asset.kind === 'character' && asset.referenceLayout !== 'four-column')
       const selected = scoped.filter(needsWork)
       const results: Array<{
         assetId: string
@@ -1763,71 +1835,55 @@ export function apply(ctx: Context): void {
         error?: string
       }> = []
       const assets: PlanAsset[] = [...allAssets]
-      const sheetFailures: string[] = []
       // One draw path for the run: the same plan seed and the same cancellation signal.
-      const drawImage = (prompt: string, ratio: '3:4' | '16:9' | '1:1'): Promise<string> =>
-        ctx.h3Video.keyframe({ prompt, ratio, ...(args.seed !== undefined ? { seed: args.seed } : {}) }, exec.signal)
+      const drawImage = (prompt: string, ratio: '16:9' | '1:1', subjectReference?: string): Promise<string> =>
+        ctx.h3Video.keyframe({
+          prompt, ratio,
+          ...(subjectReference !== undefined ? { subjectReference } : {}),
+          ...(args.seed !== undefined ? { seed: args.seed } : {}),
+        }, exec.signal)
       for (const asset of selected) {
         let reference = asset.reference
-        let sheet: string | undefined
-        let sheetAttachment: ImageAttachmentRef | undefined
         let attachment: ImageAttachmentRef | undefined
         let failure: string | undefined
         try {
-          const existing = asset.reference
-          const redraw = regenerate || existing === undefined
-          reference = redraw
-            ? await commitAssetImage(
-              await drawImage(
-                asset.kind === 'character'
-                  ? buildCharacterReferencePrompt(asset, prior.style)
-                  : buildStillPrompt(asset, prior.style),
-                asset.kind === 'character' ? '3:4' : asset.kind === 'scene' ? '16:9' : '1:1',
-              ),
-              outputDir,
-              prior.id,
-              asset.id,
-            )
-            : existing
+          reference = await commitAssetImage(
+            await drawImage(
+              asset.kind === 'character'
+                ? buildCharacterReferencePrompt(asset, prior.style)
+                : buildStillPrompt(asset, prior.style),
+              asset.kind === 'prop' ? '1:1' : '16:9',
+              asset.kind === 'character' && asset.referenceLayout !== 'four-column' ? asset.reference : undefined,
+            ),
+            outputDir,
+            prior.id,
+            asset.id,
+          )
           attachment = await saveImageAttachment(ctx, reference)
         } catch (error: unknown) {
           failure = errorText(error)
-        }
-        // The sheet is the design record drawn from the reference, never an anchor. A failed sheet
-        // leaves the reference and any earlier sheet in place and does not fail the asset.
-        const anchor = failure === undefined ? reference : undefined
-        if (asset.kind === 'character' && anchor !== undefined) {
-          try {
-            const drawn = await ctx.h3Video.keyframe({
-              prompt: buildCharacterSheetPrompt(asset, prior.style),
-              ratio: '16:9',
-              subjectReference: anchor,
-              ...(args.seed !== undefined ? { seed: args.seed } : {}),
-            }, exec.signal)
-            sheet = await commitAssetImage(drawn, outputDir, prior.id, `${asset.id}-sheet`)
-            sheetAttachment = await saveImageAttachment(ctx, sheet)
-          } catch (error: unknown) {
-            sheetFailures.push(`${asset.name}: ${errorText(error)}`)
-          }
         }
         results.push({
           assetId: asset.id,
           name: asset.name,
           kind: asset.kind,
+          ...(asset.kind === 'character' && failure === undefined ? { referenceLayout: 'four-column' as const } : {}),
           ...(failure === undefined && reference !== undefined ? { image: reference } : {}),
           ...(attachment !== undefined ? { attachment } : {}),
-          ...(sheet !== undefined ? { sheet } : {}),
-          ...(sheetAttachment !== undefined ? { sheetAttachment } : {}),
           state: failure === undefined ? 'generated' : 'failed',
           ...(failure !== undefined ? { error: failure } : {}),
         })
         const index = assets.findIndex(candidate => candidate.id === asset.id)
         const current = index !== -1 ? assets[index] : undefined
-        if (current !== undefined && (reference !== current.reference || sheet !== undefined)) {
+        if (current !== undefined && failure === undefined) {
+          const copied = copyAsset(current)
+          const nextAsset = asset.kind === 'character'
+            ? (({ sheet: _legacySheet, ...withoutLegacySheet }) => withoutLegacySheet)(copied)
+            : copied
           assets[index] = {
-            ...copyAsset(current),
+            ...nextAsset,
             ...(reference !== undefined ? { reference } : {}),
-            ...(sheet !== undefined ? { sheet } : {}),
+            ...(asset.kind === 'character' ? { referenceLayout: 'four-column' as const } : {}),
           }
         }
       }
@@ -1842,7 +1898,6 @@ export function apply(ctx: Context): void {
       const generatedCount = results.filter(result => result.state === 'generated').length
       const failedCount = results.filter(result => result.state === 'failed').length
       const notice = `generated ${generatedCount} asset image(s) for plan ${prior.id}${failedCount > 0 ? `, ${failedCount} failed` : ''}`
-        + (sheetFailures.length > 0 ? `, ${sheetFailures.length} turnaround sheet(s) failed — ${sheetFailures.join('; ')}` : '')
       return { planId: prior.id, assets: results, notice }
     },
     presentCall: args => presentCall('Generate asset images', args.plan_id),
@@ -1850,7 +1905,7 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'video_library',
-    description: 'List the project asset library: characters, scenes, and props confirmed in earlier plans, each with its canonical prompt block and reference image; a character also lists the front/side/back turnaround sheet drawn from its reference. Attach one to a new plan with video_plan library_assets instead of redefining it.',
+    description: 'List the project asset library: characters, scenes, and props confirmed in earlier plans, each with its canonical prompt block and reference image. Legacy turnaround fields may still be listed for older records, but new runs have one reference image per character. Attach one to a new plan with video_plan library_assets instead of redefining it.',
     parameters: {},
     output: jsonOutput(LIBRARY_VALUE_SCHEMA),
     async execute() {
@@ -1863,6 +1918,7 @@ export function apply(ctx: Context): void {
         ...(asset.prompt !== undefined ? { prompt: asset.prompt } : {}),
         ...(asset.reference !== undefined ? { reference: asset.reference } : {}),
         ...(asset.sheet !== undefined ? { sheet: asset.sheet } : {}),
+        ...(asset.referenceLayout !== undefined ? { referenceLayout: asset.referenceLayout } : {}),
       }))
       const notice = listed.length === 0
         ? `the project asset library at ${libraryPath(ctx.h3Video.outputDir)} is empty`
@@ -1923,7 +1979,7 @@ export function apply(ctx: Context): void {
           const jobId = ctx.jobs.start({
             kind: 'h3-video',
             label: `render ${plan.id}/multi-shot`,
-            owner: agent,
+            owner: agent.id,
             outputLimitBytes: 4000,
             run: () => renderJobHooks(ctx, plan.id, combined, target, ref),
           })
@@ -1933,6 +1989,7 @@ export function apply(ctx: Context): void {
           submissions.push({ segmentId: 'all', backend, state: 'failed', error: message })
         }
       } else {
+        validateContinuity(plan.segments, plan.assets ?? [])
         const selected = args.segment_ids === undefined
           ? plan.segments
           : args.segment_ids.map((id) => {
@@ -1940,6 +1997,15 @@ export function apply(ctx: Context): void {
             if (segment === undefined) throw new Error(`plan ${plan.id} has no segment ${JSON.stringify(id)}`)
             return segment
           })
+        for (const segment of selected) {
+          const position = plan.segments.indexOf(segment)
+          if (segment.continuity !== 'continue' || position === 0) continue
+          const previous = plan.segments[position - 1]
+          const selectedPosition = selected.indexOf(segment)
+          if (args.chain !== true || selectedPosition === 0 || selected[selectedPosition - 1] !== previous) {
+            throw new Error(`segment ${segment.id} continues ${previous?.id}; render the predecessor and this shot together in storyboard order with chain=true`)
+          }
+        }
         requireRemoteConsent(paidExposure(selected, args.backend), args.allow_remote === true)
         requireCharacterAnchors(selected, plan)
         if (args.chain === true) {
@@ -1948,7 +2014,7 @@ export function apply(ctx: Context): void {
           const jobId = ctx.jobs.start({
             kind: 'h3-video',
             label: `render ${plan.id}/chain`,
-            owner: agent,
+            owner: agent.id,
             outputLimitBytes: 8000,
             run: () => chainJobHooks(ctx, plan, selected, args.backend),
           })
@@ -1982,7 +2048,7 @@ export function apply(ctx: Context): void {
             const jobId = ctx.jobs.start({
               kind: 'h3-video',
               label: `render ${plan.id}/${segment.id}`,
-              owner: agent,
+              owner: agent.id,
               outputLimitBytes: 4000,
               run: () => renderJobHooks(ctx, plan.id, segment, target, ref),
             })
@@ -2114,8 +2180,9 @@ export function apply(ctx: Context): void {
           type: 'text',
           text: '用户请求生成视频：' + text + '\n\n'
             + '请按 H3 视频生成流程执行：'
-            + '1) ≤15 秒短片优先 mode=multi_shot，一次生成完整故事；默认一位主角、一个地点、连续时间、约三镜，每镜一个可见事件。用 video_plan 保存素材 id 与分镜，每镜含 prompt、asset_ids、start_state、event、end_state、duration_seconds、resolution、ratio、backend，第二镜起声明 continuity。逐镜审查上一镜 end_state 与下一镜 start_state，避免重复动作、道具换手和无解释跳时空；程序只校验字段与素材引用，不判断剧情语义；'
-            + '2) 先由导演智能体自动分析剧情和已有参考图中的角色身份：把年龄感、职业与生活状态、体型、脸型、发型、妆感、眼神、嘴角/表情、服装、鞋子、配饰和姿态改写为可观察的 asset.prompt，并根据该角色的剧情要求写明负面约束，禁止与设定相反的年龄感、脸型、表情、服装或比例；不要把某个角色的冷感或疲惫套给所有角色。角色提示词由智能体编写，用户只需描述剧情和人物，无需手写提示词；已有参考图要继承稳定身份特征，只补足全身构图并修正与剧情冲突的表现。记录或生成角色/场景/道具素材，展示分镜与成本。用 video_keyframes 默认只生成开场图，画第一镜 start_state、事件尚未发生；展示并确认画面。后续镜头图片仅是分镜预览，不会分别约束整片。用户提供开场图时放在第一镜 references 的 first_frame；生成角色图后逐项检查年龄、脸型、眼神、表情、服装、鞋子和全身完整性，不符合就用 regenerate 重抽；'
+            + STORYBOARD_WORKFLOW_GUIDANCE + '\n'
+            + '1) ≤15 秒短片优先 mode=multi_shot，一次生成完整故事；不按时长固定拆镜，15 秒可用一个连续长镜头；确需切镜时按剧情分配时长，仍合并为一次 H3 任务；只有需要真实尾帧链、独立 closing frame、不同素材或不同路由时才用 per_segment。默认一位主角、一个地点、连续时间，长镜头内按顺序推进动作。用 video_plan 保存素材 id 与分镜，每镜含 prompt、asset_ids、start_state、event、end_state、duration_seconds、resolution、ratio、backend，第二镜起声明 continuity。逐镜审查上一镜 end_state 与下一镜 start_state，避免重复动作、道具换手和无解释跳时空；程序只校验字段与素材引用，不判断剧情语义；'
+            + '2) 先由导演智能体自动分析剧情和已有参考图中的角色身份：把年龄感、职业与生活状态、体型、脸型、发型、妆感、眼神、嘴角/表情、服装、鞋子、配饰和姿态改写为可观察的 asset.prompt，并根据该角色的剧情要求写明负面约束，禁止与设定相反的年龄感、脸型、表情、服装或比例；不要把某个角色的冷感或疲惫套给所有角色。角色提示词由智能体编写，用户只需描述剧情和人物，无需手写提示词；已有参考图要继承稳定身份特征，只补足全身构图并修正与剧情冲突的表现。复用素材库角色时也要调用 video_asset_images 补全未标记 four-column 的旧单视图；不能因已有 reference 就跳过。记录或生成角色/场景/道具素材，展示分镜与成本。用 video_keyframes 默认只生成开场图，画第一镜 start_state、事件尚未发生；展示并确认画面。后续镜头图片仅是分镜预览，不会分别约束整片。用户提供开场图时放在第一镜 references 的 first_frame；生成角色图后逐项检查年龄、脸型、眼神、表情、服装、鞋子和全身完整性，不符合就用 regenerate 重抽；'
             + '3) 确认分镜与开场图后用 video_render 渲染整片，不传 segment_ids 或 chain。multi_shot 统一后端/分辨率/比例，不能附加后续镜头参考素材；确需逐镜材料或独立路由才用 per_segment。用 job_output 等待完成；配置了云 GPU 时可先用 video_gpu action=up 确认实例就绪；'
             + '4) 全部成功后 video_assemble 拼接成片，最后用 present 交付。\n'
             + 'H3 音画同生（视频与音频同一次生成），写分镜 prompt 时要声明声音层：'

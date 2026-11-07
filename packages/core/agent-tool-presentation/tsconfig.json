@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
@@ -19,6 +20,12 @@
     },
     {
       "path": "../../core/tools"
+    },
+    {
+      "path": "../tool-executor-native"
+    },
+    {
+      "path": "../tool-executor-ptc"
     }
   ]
 }

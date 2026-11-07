@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
@@ -21,16 +22,13 @@
       "path": "../../core/agent"
     },
     {
+      "path": "../../preset/agent-preset-registry"
+    },
+    {
       "path": "../../core/session"
     },
     {
       "path": "../../session/session-projection"
-    },
-    {
-      "path": "../../core/scope"
-    },
-    {
-      "path": "../../settings/settings"
     },
     {
       "path": "../../llm/llm"
@@ -43,12 +41,6 @@
     },
     {
       "path": "../subagent"
-    },
-    {
-      "path": "../../jobs/jobs"
-    },
-    {
-      "path": "../../runtime-diagnostics/invariants"
     }
   ]
 }

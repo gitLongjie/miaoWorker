@@ -2,12 +2,16 @@
   "extends": "../../../tsconfig.base.client.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
   ],
   "references": [
+    {
+      "path": "../store"
+    },
     {
       "path": "../../api/remotes/tsconfig.client.json"
     },
@@ -15,10 +19,10 @@
       "path": "../../../vendor/cordis"
     },
     {
-      "path": "../locale"
+      "path": "../locale/tsconfig.client.json"
     },
     {
-      "path": "../ui-conversation"
+      "path": "../ui-conversation/tsconfig.client.json"
     },
     {
       "path": "../ui-primitives"
@@ -34,6 +38,33 @@
     },
     {
       "path": "../../plan/plan-mode"
+    },
+    {
+      "path": "../../api/session-controller/tsconfig.client.json"
+    },
+    {
+      "path": "../ui-chat/tsconfig.client.json"
+    },
+    {
+      "path": "../ui-sidebar-right"
+    },
+    {
+      "path": "../ui-user-questions"
+    },
+    {
+      "path": "../resources"
+    },
+    {
+      "path": "../../typert/protocol"
+    },
+    {
+      "path": "../../llm/llm"
+    },
+    {
+      "path": "../../util/crypto"
+    },
+    {
+      "path": "../../core/tool-executor-ptc"
     }
   ]
 }

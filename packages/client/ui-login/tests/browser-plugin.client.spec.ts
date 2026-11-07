@@ -8,6 +8,7 @@ import { TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
 import { apply, inject } from '../src/client/index.ts'
 import { LoginGate } from '../src/client/LoginGate.tsx'
 import { SidebarAccount } from '../src/client/SidebarAccount.tsx'
+import { GatewayAccountSection } from '../src/client/GatewayAccountSection.tsx'
 
 // The lane has no jsdom `window`, so a fresh LocaleRuntime opens on
 // FALLBACK_LOCALE (en); the bench stages zh explicitly instead.
@@ -52,7 +53,8 @@ function declare(slots: SlotRegistry): () => void {
     name: 'root',
     children: {
       'shell.overlay': { kind: 'list', scope: 'root' },
-      'sidebar.footer.action': { kind: 'list', scope: 'root' },
+      'settings.launcher': { kind: 'single', scope: 'root' },
+      'settings.section': { kind: 'list', scope: 'root' },
     },
   } as never, () => null)
 }
@@ -68,7 +70,7 @@ describe('ui-login apply', () => {
     declare(subject.slots)
     await subject.ctx.plugin({ inject: [...inject], apply }).await()
     expect(subject.slots.entries('shell.overlay')).toHaveLength(0)
-    expect(subject.slots.entries('sidebar.footer.action')).toHaveLength(0)
+    expect(subject.slots.entries('settings.launcher')).toHaveLength(0)
   })
 
   it('falls back to the deployment default endpoint without an override', async () => {
@@ -76,13 +78,13 @@ describe('ui-login apply', () => {
     const subject = await bench()
     declare(subject.slots)
     await subject.ctx.plugin({ inject: [...inject], apply }).await()
-    const face = (subject.slots.entries('sidebar.footer.action')[0]!
+    const face = (subject.slots.entries('settings.launcher')[0]!
       .inject as unknown as () => import('../src/client/SidebarAccount.tsx').SidebarAccountInjected)()
     expect(face.controller.baseUrl()).toBe('https://claw.deepagens.com')
     vi.unstubAllEnvs()
   })
 
-  it('registers the gate and the account row with a bound locale seat', async () => {
+  it('registers the gate and the account launcher with a bound locale seat', async () => {
     vi.stubEnv('DSH_CLIENT_LOGIN_URL', 'https://claw.deepagens.com/api/claw/login')
     vi.stubEnv('DSH_CLIENT_BRAND_ICON', '/brand/oem-login.svg')
     vi.stubEnv('DSH_CLIENT_LOGIN_TAGLINE_ZH', '配置的登录副标题')
@@ -94,13 +96,14 @@ describe('ui-login apply', () => {
     expect(overlay).toHaveLength(1)
     expect(overlay[0]!.component).toBe(LoginGate)
     expect(overlay[0]!.options).toMatchObject({ id: 'login-gate' })
-    const foot = subject.slots.entries('sidebar.footer.action')
+    const foot = subject.slots.entries('settings.launcher')
     expect(foot).toHaveLength(1)
     expect(foot[0]!.component).toBe(SidebarAccount)
-    expect(foot[0]!.options).toMatchObject({ id: 'login-account' })
+    expect(foot[0]!.options).toMatchObject({ priority: -1 })
     const injected = foot[0]!.inject as unknown as () => import('../src/client/SidebarAccount.tsx').SidebarAccountInjected
     const face = injected()
     expect(face.t('logout')).toBe('退出登录')
+    expect(face.t('menuSettings')).toBe('设置')
     expect(face.t('submit')).toBe('登录')
     expect(typeof face.controller.login).toBe('function')
     expect(face.controller.baseUrl()).toBe('https://claw.deepagens.com')
@@ -110,12 +113,54 @@ describe('ui-login apply', () => {
     expect(other().t('tagline')).toBe('配置的登录副标题')
   })
 
+  it('shadows the account section with the gateway page only while a session lives', async () => {
+    vi.stubEnv('DSH_CLIENT_LOGIN_URL', 'https://claw.deepagens.com/api/claw/login')
+    const subject = await bench()
+    declare(subject.slots)
+    await subject.ctx.plugin({ inject: [...inject], apply }).await()
+    // Signed out: no gateway section at all.
+    expect(subject.slots.entries('settings.section')).toHaveLength(0)
+    const face = (subject.slots.entries('settings.launcher')[0]!
+      .inject as unknown as () => import('../src/client/SidebarAccount.tsx').SidebarAccountInjected)()
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url === 'https://claw.deepagens.com/api/claw/login') {
+        return Promise.resolve(new Response(
+          JSON.stringify({ success: true, data: { display_name: '杰哥', avatar: null, api_key: 'sk-9' } }),
+          { status: 200 },
+        ))
+      }
+      if (url.endsWith('/api/usage/token/')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          code: true, data: { total_used: 1, total_available: 2, unlimited_quota: false },
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('[]', { status: 200 }))
+    }))
+    await expect(face.controller.login('jiege', 'pw')).resolves.toBe(true)
+    const sections = subject.slots.entries('settings.section')
+    expect(sections).toHaveLength(1)
+    expect(sections[0]!.component).toBe(GatewayAccountSection)
+    expect(sections[0]!.options).toMatchObject({ id: 'account', priority: -1, order: -10 })
+    const injected = sections[0]!.inject as unknown as () => { t: (key: string) => string }
+    expect(injected().t('accountNav')).toBe('账号与余额')
+    // The list cell renders its lowest-priority live entry: alongside an
+    // upstream `account` registration the gateway page wins, and after
+    // sign-out the upstream page serves the cell again.
+    subject.slots.register({ name: 'settings.section', id: 'account' }, () => null)
+    expect(subject.slots.entriesOfSlot('settings.section')[0]!.options.priority).toBe(-1)
+    face.controller.logout()
+    await Promise.resolve()
+    expect(subject.slots.entries('settings.section')).toHaveLength(1)
+    expect(subject.slots.entriesOfSlot('settings.section')[0]!.options.priority ?? 0).toBe(0)
+    vi.unstubAllGlobals()
+  })
+
   it('writes the issued key under the gateway reference and leaves the DeepSeek key alone', async () => {
     vi.stubEnv('DSH_CLIENT_LOGIN_URL', 'https://claw.deepagens.com/api/claw/login')
     const subject = await bench()
     declare(subject.slots)
     await subject.ctx.plugin({ inject: [...inject], apply }).await()
-    const face = (subject.slots.entries('sidebar.footer.action')[0]!
+    const face = (subject.slots.entries('settings.launcher')[0]!
       .inject as unknown as () => import('../src/client/SidebarAccount.tsx').SidebarAccountInjected)()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       success: true,
@@ -141,13 +186,13 @@ describe('ui-login apply', () => {
     const fiber = subject.ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
     expect(subject.slots.entries('shell.overlay')).toHaveLength(0)
-    expect(subject.slots.entries('sidebar.footer.action')).toHaveLength(0)
+    expect(subject.slots.entries('settings.launcher')).toHaveLength(0)
     declare(subject.slots)
     await Promise.resolve()
     expect(subject.slots.entries('shell.overlay')).toHaveLength(1)
-    expect(subject.slots.entries('sidebar.footer.action')).toHaveLength(1)
+    expect(subject.slots.entries('settings.launcher')).toHaveLength(1)
     await fiber.dispose()
     expect(subject.slots.entries('shell.overlay')).toHaveLength(0)
-    expect(subject.slots.entries('sidebar.footer.action')).toHaveLength(0)
+    expect(subject.slots.entries('settings.launcher')).toHaveLength(0)
   })
 })

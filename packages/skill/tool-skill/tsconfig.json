@@ -2,9 +2,12 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
-  "include": ["src"],
+  "include": [
+    "src"
+  ],
   "references": [
     {
       "path": "../../../vendor/cosmokit"
@@ -29,6 +32,9 @@
     },
     {
       "path": "../../core/tools"
+    },
+    {
+      "path": "../../session/working-directory"
     }
   ]
 }

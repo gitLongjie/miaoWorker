@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-11-03-sidebar-account-launcher-shadowing.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-11-03-sidebar-account-launcher-shadowing.md
+/agent-note-one-sidebar-account-launcher-via-slot-shadowing:
+  en: 4ddc7b1bebf66034
+  zh: 2b216edc4551d518
+/agent-note-one-sidebar-account-launcher-via-slot-shadowing/problem:
+  en: c1d30f1a9cc7967f
+  zh: ba7bf2c3f9ea8b73
+/agent-note-one-sidebar-account-launcher-via-slot-shadowing/decision:
+  en: 9cd32c57e8aebf08
+  zh: ba699b7bcffb0cbf
+/agent-note-one-sidebar-account-launcher-via-slot-shadowing/alternatives-considered:
+  en: 389568d5f1531750
+  zh: cc07bf5da14e43d6
+/agent-note-one-sidebar-account-launcher-via-slot-shadowing/verification:
+  en: afb2875350b23b41
+  zh: 0dad51e3f01bc64f
+/agent-note-one-sidebar-account-launcher-via-slot-shadowing/consequences:
+  en: 587a7ca12a01d315
+  zh: 7ead650f63c6a51b

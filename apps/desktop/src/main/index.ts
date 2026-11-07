@@ -16,9 +16,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import { loadLayeredEnv } from '@deepseek-ai/dsh-app-boot'
 import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway/types'
 import { runDesktopBoot } from './boot.ts'
+import { mountDesktopOffice, resolveBundledSkillDir } from './desktop/office.ts'
 import { comfyuiLocalDir, deployBundledComfyUI } from './desktop/comfyui-bootstrap.ts'
 import type { ProcessShutdown } from './process-shutdown.ts'
-import { dispatchTransportFetch, registerTransportIpc, type TransportFetchRequest } from './ipc/transport.ts'
+import { dispatchTransportFetch, registerTransportIpc, transportRequestBytes, type TransportFetchRequest } from './ipc/transport.ts'
 import { registerBundleIpc } from './ipc/bundle.ts'
 import { registerPluginToggleIpc } from './ipc/plugin-toggle.ts'
 import { renderDesktopIndex } from './ipc/index-html.ts'
@@ -27,8 +28,9 @@ import { installSingleInstanceLock } from './desktop/single-instance.ts'
 import { installTray, type TrayHandle } from './desktop/tray.ts'
 import { copy, normalizeLocale, type DesktopLocaleId, type DesktopTextKey } from './desktop/locales.ts'
 import { pinWindowTitle, resolveDesktopWindowTitle } from './desktop/window-title.ts'
+import { resolveAppUserModelId } from './desktop/app-user-model-id.ts'
 import { installApplicationMenu, registerMenuPopupIpc } from './desktop/menu.ts'
-import { resolveWindowChrome } from './desktop/window-chrome.ts'
+import { resolveWindowChrome, toggleWindowZoom } from './desktop/window-chrome.ts'
 import { initUpdater, registerUpdateIpc, setUpdaterLocale } from './updater.ts'
 import { installNotificationActivation, notifyTurnCompletion } from './desktop/completion-notification.ts'
 import {
@@ -50,6 +52,7 @@ import {
   type PackagedResourceLabel,
 } from './desktop/packaged-resources.ts'
 import { runPackagedSmoke } from './desktop/packaged-smoke.ts'
+import { desktopWebDistDir, resolveDesktopPreloadPath } from './desktop-paths.ts'
 
 /** Absolute path of this desktop app's package.json (the OEM resolution anchor). */
 const INSTALL_ANCHOR = fileURLToPath(new URL('../../package.json', import.meta.url))
@@ -63,31 +66,26 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 // Windows keys the taskbar entry, Alt+Tab label, and Task Manager's Apps row off
-// the app name and AppUserModelId; a dev launch runs the literal electron.exe, so
-// without these it presents as "electron" with Electron's atom icon. The id must
-// match electron-builder.yml's appId so dev and packaged share one identity. The
-// name must be set before any userData path (the single-instance lock below).
+// the app name and AppUserModelId (desktop/app-user-model-id.ts owns the id).
+// The name must be set before any userData path (the single-instance lock below).
 const DESKTOP_PRODUCT_NAME = resolveDesktopWindowTitle(app.getName())
 const DESKTOP_UPDATE_URL: string | undefined = readDesktopUpdateUrl()
 app.setName(DESKTOP_PRODUCT_NAME)
-if (process.platform === 'win32') app.setAppUserModelId('ai.deepagens.worker')
+if (process.platform === 'win32') app.setAppUserModelId(resolveAppUserModelId())
 // The userData directory stays on the ASCII file-system id, not the localized
 // display name `setName` installs: users and support scripts navigate
 // %APPDATA% (and macOS Application Support) by the product's file-system id
-// (miaoWorker), and the display name belongs to the window and tray, not the
+// (DeepWorker), and the display name belongs to the window and tray, not the
 // disk layout.
-app.setPath('userData', join(app.getPath('appData'), 'miaoWorker'))
+app.setPath('userData', join(app.getPath('appData'), 'DeepWorker'))
 // The smoke harness must never contend with a real instance's lock: the
 // single-instance lock is scoped to userData, so the harness points it at its
 // own directory. Must run before installSingleInstanceLock() below.
 const smokeUserData = process.env.DSH_PACKAGED_SMOKE_USER_DATA
 if (smokeUserData !== undefined && smokeUserData !== '') app.setPath('userData', smokeUserData)
 
-/** Directory of the built frontend dist, beside this compiled main in both layouts. */
-const WEB_DIST_DIR = fileURLToPath(new URL('../../web/', import.meta.url))
-
-/** Absolute path of the preload script. */
-const PRELOAD_PATH = fileURLToPath(new URL('../preload/index.js', import.meta.url))
+/** Directory of the built frontend dist under the desktop package root. */
+const WEB_DIST_DIR = desktopWebDistDir(import.meta.url)
 
 /** The settled host context and its shutdown controller, filled after boot. */
 const host: { ctx?: Context; shutdown?: ProcessShutdown } = {}
@@ -173,12 +171,17 @@ function log(line: string): void {
  * wedged boot or a stuck turn previously left no trace.
  */
 function mirrorConsoleToLog(): void {
+  // String(args) would render every structured diagnostic as "[object Object]".
+  const render = (value: unknown): string => {
+    if (typeof value === 'string') return value
+    try { return JSON.stringify(value) ?? String(value) } catch { return String(value) }
+  }
   for (const method of ['error', 'warn'] as const) {
     const original = console[method].bind(console)
     console[method] = (...args: readonly unknown[]): void => {
       original(...args)
       try {
-        const text = args.map(String).join(' ')
+        const text = args.map(render).join(' ')
         const logPath = process.env.DSH_DESKTOP_LOG ?? join(app.getPath('userData'), 'desktop.log')
         appendFileSync(logPath, `${new Date().toISOString()} host ${method}: ${text}\n`)
       } catch {
@@ -227,6 +230,16 @@ async function main(): Promise<void> {
       INSTALL_ANCHOR,
       JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as DesktopHelpManifest,
     )
+    // The running release version backs every client-identity reader (the
+    // platform-view headers, product analytics `serviceVersion`) the way the
+    // official build's inlined value would; an explicit build value wins.
+    process.env.DSH_CLIENT_VERSION ??= app.getVersion()
+    const bundledSkills = resolveBundledSkillDir({
+      packaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    })
+    if (bundledSkills !== undefined) process.env.DSH_BUNDLED_SKILL_DIR ??= bundledSkills
     const environment = loadLayeredEnv('desktop')
     log(`desktop: booting (packaged=${String(app.isPackaged)}) execArgv=${JSON.stringify(process.execArgv)} node=${process.versions.node}`)
     const result = await runDesktopBoot({
@@ -241,6 +254,15 @@ async function main(): Promise<void> {
     host.ctx = result.ctx
     host.shutdown = result.shutdown
     log('desktop: host booted')
+    // Office create tools and skills live on the in-process host (not only the
+    // legacy child dsh-desktop-host). Without this mount, chat never sees
+    // create_pptx / create_docx / create_xlsx and falls back to text scripts.
+    await mountDesktopOffice(result.ctx, {
+      packaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    })
+    log('desktop: office tools mounted')
     // First-launch ComfyUI deployment runs beside the shell, never blocking it:
     // copying the bundled program tree takes minutes, the app works without it
     // (the remote MiniMax backend), and the module's own logging owns progress.
@@ -316,7 +338,7 @@ async function main(): Promise<void> {
     })
     installApplicationMenu(shellT(currentLocale), helpDocsUrl)
     host.ctx?.on('session/event', (session, event) => {
-      notifyTurnCompletion(win, currentLocale, String(session.id), event)
+      notifyTurnCompletion(win, currentLocale, DESKTOP_PRODUCT_NAME, String(session.id), event)
     })
     win.webContents.on('preload-error', (_event, preloadPath, error) => {
       log(`desktop: preload error ${preloadPath}: ${error.message}`)
@@ -372,9 +394,31 @@ async function main(): Promise<void> {
       if (ns === 'locale') rebuildShell(win)
     })
   } catch (error) {
-    log(`desktop: startup failed:\n${flattenError(error)}`)
+    log(`desktop: startup failed:\n${flattenError(error)}${startupDiagnostic(error)}`)
     app.exit(1)
   }
+}
+
+/** Dump the boot collector's warn/error records the StartupError carries, if any. */
+function startupDiagnostic(error: unknown): string {
+  type StartupMessages = {
+    startup?: { messages?: readonly { name: string; type: string; args: readonly unknown[] }[] }
+  }
+  type CompositionPlugins = {
+    composition?: { plugins?: readonly { id: string; module: string; state: string; missing?: readonly string[] }[] }
+  }
+  const lines: string[] = []
+  const messages = (error as StartupMessages).startup?.messages
+  if (messages !== undefined) {
+    lines.push(...messages.map(({ name, type, args }) => `startup ${type} ${name}: ${args.map(String).join(' ')}`))
+  }
+  const plugins = (error as CompositionPlugins).composition?.plugins
+  if (plugins !== undefined) {
+    for (const row of plugins.filter(plugin => plugin.state !== 'active')) {
+      lines.push(`entry ${row.id} (${row.module}): ${row.state}${row.missing?.length ? ` missing ${row.missing.join(', ')}` : ''}`)
+    }
+  }
+  return lines.length === 0 ? '' : '\n' + lines.join('\n')
 }
 
 /** Read packaged metadata and resolve the desktop update feed (undefined disables updates). */
@@ -473,14 +517,14 @@ function createWindow(): BrowserWindow {
     // taskbar hover tooltip and alt-tab label; page-title-updated must not
     // leak session projections there (pinWindowTitle blocks adoption).
     title: DESKTOP_PRODUCT_NAME,
-    // Per-platform frame chrome (desktop/window-chrome.ts): Windows and Linux
-    // draw the whole bar in the renderer (render/title-bar.ts) over the
-    // window-control IPC channels below; macOS keeps the native traffic lights
-    // over the same bar via hiddenInset.
+    // Frameless on every platform (desktop/window-chrome.ts). The renderer
+    // draws the title bar (render/title-bar.ts) and drives it over the
+    // window-control IPC channels below, so popup content can paint over the
+    // bar instead of sitting under a native caption.
     ...resolveWindowChrome(process.platform),
     backgroundColor: '#ffffff',
     webPreferences: {
-      preload: PRELOAD_PATH,
+      preload: resolveDesktopPreloadPath(import.meta.url),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -502,19 +546,13 @@ function createWindow(): BrowserWindow {
 
 /**
  * Window-control channels the renderer's title bar sends over the generic IPC
- * bridge (Windows/Linux only; macOS renders no custom controls). Each targets
- * the sender's own window, so a malicious page can only affect the window it
- * lives in.
+ * bridge. Each targets the sender's own window, so a malicious page can only
+ * affect the window it lives in. The zoom channel is fullscreen on macOS and
+ * maximize elsewhere (toggleWindowZoom).
  */
 const WINDOW_CONTROL_CHANNELS: ReadonlyArray<{ channel: string; action: (win: BrowserWindow) => void }> = [
   { channel: 'dsh:window:minimize', action: (win) => { win.minimize() } },
-  {
-    channel: 'dsh:window:toggle-maximize',
-    action: (win) => {
-      if (win.isMaximized()) win.unmaximize()
-      else win.maximize()
-    },
-  },
+  { channel: 'dsh:window:toggle-maximize', action: (win) => { toggleWindowZoom(win, process.platform) } },
   { channel: 'dsh:window:close', action: (win) => { win.close() } },
 ]
 
@@ -630,9 +668,7 @@ function registerWebProtocol(writeLog: (line: string) => void): void {
       // protocol directly instead of the IPC fetch hook. API paths belong to
       // the in-process Host connection; they are never frontend files.
       if (pathname.startsWith('/api/')) {
-        const bodyBytes = request.method === 'GET' || request.method === 'HEAD'
-          ? undefined
-          : await request.arrayBuffer()
+        const body = await transportRequestBytes(request)
         const headers: Record<string, string> = {}
         request.headers.forEach((value, key) => { headers[key] = value })
         const req: TransportFetchRequest = {
@@ -640,7 +676,7 @@ function registerWebProtocol(writeLog: (line: string) => void): void {
           path: `${pathname}${url.search}`,
           method: request.method,
           headers,
-          ...(bodyBytes === undefined ? {} : { body: new TextDecoder().decode(bodyBytes) }),
+          ...(body === undefined ? {} : { body }),
         }
         const response = await dispatchTransportFetch(
           { connection: host.ctx?.get('connection'), gateway: host.ctx?.get('typertGateway') },

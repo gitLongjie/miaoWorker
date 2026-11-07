@@ -6,6 +6,7 @@
  * listing types are imported type-only from the host and erased from the browser artifact.
  */
 
+import { createStudioActions } from './studio-api.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { createElement } from 'react'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
@@ -139,6 +140,21 @@ export function apply(ctx: Context): void {
   }
 
   const injected: VideoWorkbenchInjected = {
+    studio: {
+      ...createStudioActions(),
+      requestSkill: async (skill, id, revision) => {
+        const current = (ctx.sessions.list.getSnapshot() as { current?: SessionId }).current
+        if (current === undefined) throw new Error('No session is open')
+        const scoped = ctx.sessions.scope(current)
+        if (scoped === undefined) throw new Error('The open session is unavailable')
+        const conversation = scoped.get('conversation') as ComposerDraftFace | undefined
+        if (conversation === undefined) throw new Error('The open session has no composer')
+        const dictionary = ctx.locale.getSnapshot().active === 'en' ? en : zh
+        const prompt = dictionary.studioSkillRequest.replace('{skill}', skill).replace('{id}', id).replace('{revision}', String(revision))
+        conversation.input.for(scoped).setDraft(prompt)
+        ctx.layout.selectPanel(null)
+      },
+    },
     loadSummary: async () => {
       const response = await fetch(WORKBENCH_PROJECTS_PATH, { headers: { accept: 'application/json' } })
       if (!response.ok) throw new Error(`video workbench listing failed with HTTP ${response.status}`)
@@ -165,7 +181,7 @@ export function apply(ctx: Context): void {
         .replace('{assetId}', assetId)
         .replace('{name}', name)
         .replace('{kind}', kindLabel)
-      const current = ctx.sessions.list.getSnapshot().current
+      const current = (ctx.sessions.list.getSnapshot() as { current?: SessionId }).current
       if (current === undefined) return Promise.reject(new Error('no Session is open to receive the request'))
       const scoped = ctx.sessions.scope(current)
       if (scoped === undefined) return Promise.reject(new Error(`Session ${current} is not addressable`))
@@ -207,7 +223,7 @@ export function apply(ctx: Context): void {
       // The workbench is a root-scope panel with no Session binding of its own, so it reaches the
       // open Session through the sessions service: `scope()` hands out an Agent-scoped context, and
       // the conversation service's input facade for that scope owns the composer draft.
-      const current = ctx.sessions.list.getSnapshot().current
+      const current = (ctx.sessions.list.getSnapshot() as { current?: SessionId }).current
       if (current === undefined) throw new Error('no Session is open to receive the request')
       const scoped = ctx.sessions.scope(current)
       if (scoped === undefined) throw new Error(`Session ${current} is not addressable`)
@@ -216,7 +232,7 @@ export function apply(ctx: Context): void {
       // Attach the anchors as real images so the chat shows them instead of pasting paths; the
       // mention text stays for the paths the render actually takes.
       const files = await anchorFiles(assets, outputDir)
-      if (ctx.sessions.list.getSnapshot().current !== current) throw new Error('the open Session changed during image loading')
+      if ((ctx.sessions.list.getSnapshot() as { current?: SessionId }).current !== current) throw new Error('the open Session changed during image loading')
       const drafts = files.length === 0 ? [] : conversation.createDrafts(current, files)
       // Seed the composer instead of sending: the user edits the prompt there and decides to send.
       conversation.input.for(scoped).setDraft(draft)

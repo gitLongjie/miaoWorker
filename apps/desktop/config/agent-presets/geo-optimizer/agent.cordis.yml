@@ -4,8 +4,8 @@
 # row is the expert's soul (identity plus methodology), the preset-local
 # `skills/` directory is its toolbox, and `preset.yml` publishes the
 # expert-card metadata (category, tags, quickPrompts, icon) that pickers group
-# and filter by. Everything below reuses the shipped preset machinery —
-# discovery, standing mounts, authoring copies — so an expert adds nothing
+# and filter by. The declaration includes this composition into its preset
+# scope, so an expert adds nothing
 # model-facing beyond what a preset already records in the session log.
 
 # The persona shadows the deployment default for this expert's sessions.
@@ -23,14 +23,23 @@
 
       客户的 rate card（写作单价、渠道价、监测费）永远优先于任何默认数字；所有默认值都是可改假设，引用时必须声明。
 
+      交付物规则：用户要演示文稿、PPT 或幻灯片时，先加载 `dashi-ppt` skill 并严格按它的流程生成，不要改用 create_pptx，也不要自己写 .bat/.py 生成器。Word / Excel 仍调用 create_docx / create_xlsx。只有技能目录里没有 `dashi-ppt` 时，才用 create_pptx 做一份纯文本演示。
+
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
   config:
     maxBytes: 65536
 
-# Read access to the workspace: rate cards, briefs, and prior diagnostics are
-# the expert's inputs. No shell and no editor — a consulting expert reads and
-# advises rather than builds.
+# Workspace reads for rate cards and briefs. PowerShell stays on so the
+# bundled dashi-ppt skill can run its generator. Do not invent other scripts.
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
 
@@ -38,6 +47,11 @@
   name: '@deepseek-ai/dsh-tool-fs-search'
   config:
     sampleOverCapGlobResults: false
+
+# Delivery declarations for files the expert hands to the user (including Office
+# create results when an explicit present is still useful beside host create_*).
+- id: present
+  name: '@deepseek-ai/dsh-tool-present'
 
 # The pricing skill travels with this preset rather than living in the user's
 # skill root: it is the methodology this expert is hired for, and the preset

@@ -6,9 +6,10 @@
  * uploads to the configured GitHub provider.
  */
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import yaml from 'js-yaml'
 import {
   createElectronBuilderOemConfig,
   readDesktopOemConfig,
@@ -38,7 +39,24 @@ function run(cmd, cmdArgs, opts = {}) {
 // ships these files verbatim, and the frontend and main-process builds below
 // consume the same lib/ outputs, so packaging over stale or missing libs
 // ships whatever was last built; rebuilding here keeps the payload fresh.
-run('pnpm', ['run', 'build'], { cwd: repoRoot })
+// The artifacts scope, not the default: packaging consumes lib/ outputs only,
+// and the default's aggregate checks cost memory the macOS runner (7 GB)
+// cannot hold — the runner dies mid-build and the job logs upload nothing.
+run('pnpm', ['run', 'build:artifacts'], { cwd: repoRoot })
+
+// 0b. app.asar copies the workspace @deepseek-ai/node-addon-system-<platform>-<arch>
+// packages verbatim, and their bin/system.node is ignored build output; without
+// it the packaged flock entry fails with "Cannot find module .../bin/system.node".
+// macOS packages every mac target arch from one host, so each one is built here.
+if (process.platform === 'darwin') {
+  const builderConfig = yaml.load(readFileSync(resolve(root, 'electron-builder.yml'), 'utf8'))
+  const macArchitectures = new Set(builderConfig.mac.target.flatMap(target => target.arch))
+  for (const arch of macArchitectures) {
+    run('pnpm', ['exec', 'tsx', 'native/system/scripts/build.ts', '--host-addon-only', '--arch', arch], { cwd: repoRoot })
+  }
+} else if (process.platform === 'linux') {
+  run('pnpm', ['run', 'build:native-system'], { cwd: repoRoot })
+}
 
 // 1. Build the frontend with a relative asset base directly into apps/desktop/web
 // (vite outDir outside the web project root), so apps/web/dist stays untouched

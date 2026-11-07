@@ -10,6 +10,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { SessionRetainInfo } from '@deepseek-ai/dsh-api-session-controller/client'
+import { SessionId } from '@deepseek-ai/dsh-session/types'
 import { AgentPresetLabel } from '../src/client/AgentPresetLabel.tsx'
 import type { AgentPresetLabelProps } from '../src/client/AgentPresetLabel.tsx'
 import { AgentPresetSeat } from '../src/client/AgentPresetSeat.tsx'
@@ -23,16 +25,15 @@ afterEach(cleanup)
 const ROSTER_READY: AgentPresetSettingsState = {
   status: 'ready',
   error: null,
-  options: [{ id: 'standard', trust: 'system', name: '标准模式' }, { id: 'mine', trust: 'user' }],
+  options: [{ id: 'standard' }, { id: 'mine' }],
 }
 
 const SEAT_OPTIONS: AgentPresetSeatState['options'] = [
-  { id: 'standard', trust: 'system', name: '标准模式', description: '完整的编码 agent。' },
-  { id: 'mine', trust: 'user' },
+  { id: 'standard' },
+  { id: 'mine' },
 ]
 
 const SEAT_READY: AgentPresetSeatState = {
-  showPicker: true,
   current: 'standard',
   currentPreset: SEAT_OPTIONS[0],
   options: SEAT_OPTIONS,
@@ -40,6 +41,8 @@ const SEAT_READY: AgentPresetSeatState = {
   error: null,
   introduce: false,
 }
+
+const useSessionRetainInfo = <Selected,>(selector: (value: undefined) => Selected): Selected => selector(undefined)
 
 /** The runtime's own `{name}` substitution, so a test reads the shown text. */
 function translate(key: keyof typeof en, params?: Record<string, unknown>): string {
@@ -52,6 +55,8 @@ function translate(key: keyof typeof en, params?: Record<string, unknown>): stri
 function renderSeat(
   state: Partial<AgentPresetSeatState> = {},
   select: () => Promise<string | undefined> = () => Promise.resolve(undefined),
+  session?: { id: string; retainInfo: SessionRetainInfo | undefined },
+  enabled = true,
 ) {
   const merged = { ...SEAT_READY, ...state }
   // Naming moves with the id it names: the snapshot's `currentPreset` is the
@@ -60,13 +65,28 @@ function renderSeat(
     ? merged
     : { ...merged, currentPreset: merged.options.find(option => option.id === merged.current) }
   const store = createSnapshotStore<AgentPresetSeatState>(ready)
-  const actions = { load: vi.fn(() => Promise.resolve()), select: vi.fn(select), introduced: vi.fn() }
-  render(<AgentPresetSeat {...({
+  const developerTools = createSnapshotStore(enabled)
+  const actions = {
+    load: vi.fn(() => Promise.resolve()), select: vi.fn(select), introduced: vi.fn(),
+    openExperts: vi.fn(),
+    dismissRefusal: vi.fn((error: AgentPresetSeatState['error']) => {
+      if (store.getSnapshot().error === error && error !== null && typeof error === 'object') {
+        store.set({ ...store.getSnapshot(), error: error.reason })
+      }
+    }),
+  }
+  const props = {
     ...actions,
+    sessionId: session === undefined ? undefined : SessionId(session.id),
+    useDeveloperTools: bindSnapshotSelector(developerTools),
     useAgentPresetSeat: bindSnapshotSelector(store),
+    useSessionRetainInfo: session === undefined
+      ? useSessionRetainInfo
+      : <Selected,>(selector: (value: SessionRetainInfo | undefined) => Selected) => selector(session.retainInfo),
     t: translate,
-  } as unknown as AgentPresetSeatProps)} />)
-  return actions
+  } as AgentPresetSeatProps
+  render(<AgentPresetSeat {...props} />)
+  return { ...actions, developerTools, store }
 }
 
 function renderLabel(
@@ -90,9 +110,31 @@ function renderLabel(
 }
 
 describe('the new-session chip', () => {
-  it('renders nothing while the picker is disabled', () => {
-    renderSeat({ showPicker: false })
+  it('opens the experts page and does not stage a preset from the chip', () => {
+    const actions = renderSeat()
+    fireEvent.click(screen.getByRole('button', { name: en.presetStandardName }))
+    expect(actions.openExperts).toHaveBeenCalledOnce()
+    expect(actions.select).not.toHaveBeenCalled()
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
 
+  it('keeps a named preset visible and still opens the experts page', () => {
+    const actions = renderSeat({
+      current: 'ptc',
+      options: [{ id: 'ptc', name: 'My workflow' }],
+    }, undefined, undefined, false)
+    fireEvent.click(screen.getByRole('button', { name: 'My workflow' }))
+    expect(actions.openExperts).toHaveBeenCalledOnce()
+  })
+
+  it('renders only for a Session retained by the main view', () => {
+    renderSeat({}, undefined, {
+      id: 's1', retainInfo: { referenceCount: 1, retainedBy: { mainView: 1 } },
+    })
+    expect(screen.getByRole('button')).toBeTruthy()
+    cleanup()
+
+    renderSeat({}, undefined, { id: 's1', retainInfo: undefined })
     expect(screen.queryByRole('button')).toBeNull()
   })
 
@@ -102,20 +144,6 @@ describe('the new-session chip', () => {
     await waitFor(() => { expect(actions.load).toHaveBeenCalledTimes(1) })
     expect(screen.getByRole('button').textContent).toContain(en.presetStandardName)
     expect(screen.getByRole('button').getAttribute('title')).toBe(en.seatHint)
-  })
-
-  it('offers each preset with what it is for', () => {
-    renderSeat()
-
-    fireEvent.click(screen.getByRole('button'))
-
-    // The id alone never said what a preset does; the description is the
-    // whole reason a preset can publish metadata at all.
-    expect(screen.getByText(en.presetStandardDescription)).toBeTruthy()
-    // A preset that published none still reads as a row, with its id standing
-    // in for the name.
-    expect(screen.getByText(en.noDescription)).toBeTruthy()
-    expect(screen.getByText('mine')).toBeTruthy()
   })
 
   it('falls back to the id when the staged preset published no name', () => {
@@ -130,31 +158,19 @@ describe('the new-session chip', () => {
     expect(screen.getByRole('button').textContent).toContain('arriving')
     // Nothing on the roster names it, so the hint says as much instead of
     // claiming a preset that is not there.
-    expect(screen.getByRole('button').getAttribute('title'))
-      .toBe(translate('seatUnknownHint', { id: 'arriving' }))
+    expect(screen.getByRole('button').getAttribute('title')).toBe(en.seatHint)
   })
 
-  it('names a composition the menu cannot offer and says where it came from', () => {
-    // An expert is hired from the market rather than picked here, so the chip
-    // shows a preset its own menu has no row for.
+  it('names a market-hired composition like any staged preset', () => {
+    // A hire from the expert market stages through this seat, so the chip
+    // names the expert the same way it names a mode picked on the spot.
     renderSeat({
       current: 'geo-optimizer',
-      currentPreset: { id: 'geo-optimizer', trust: 'user', name: 'GEO 优化专家' },
+      currentPreset: { id: 'geo-optimizer', name: 'GEO 优化专家' },
     })
 
     expect(screen.getByRole('button').textContent).toContain('GEO 优化专家')
-    expect(screen.getByRole('button').getAttribute('title'))
-      .toBe(translate('seatExpertHint', { name: 'GEO 优化专家' }))
-  })
-
-  it('stages the picked preset and closes the menu', () => {
-    const actions = renderSeat()
-    fireEvent.click(screen.getByRole('button'))
-
-    fireEvent.click(screen.getByText('mine'))
-
-    expect(actions.select).toHaveBeenCalledWith('mine')
-    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByRole('button').getAttribute('title')).toBe(en.seatHint)
   })
 
   it('disables the trigger while a switch is in flight', () => {
@@ -179,51 +195,46 @@ describe('the new-session chip', () => {
     expect(screen.queryByRole('button')).toBeNull()
   })
 
-  it('closes on an outside dismissal', () => {
-    renderSeat()
-    fireEvent.click(screen.getByRole('button'))
-
-    fireEvent.keyDown(document, { key: 'Escape' })
-
-    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false')
-  })
 })
 
 describe('a refused switch', () => {
-  it('announces the reason instead of letting the label snap back in silence', async () => {
+  it('announces delayed and repeated refusals even without a composed preset or Coding Tools', () => {
     // The banner's own timer has to be a fake one from the start, or the
     // lifetime assertion below would wait out its real nine seconds.
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       const reason = 'failed to import loader entry live-on-mac (@deepseek-ai/dsh-also-gone)'
-      renderSeat({}, () => Promise.resolve(reason))
-
-      fireEvent.click(screen.getByRole('button'))
-      fireEvent.click(screen.getByRole('menuitem', { name: /mine/ }))
+      const actions = renderSeat({ current: '' }, undefined, undefined, false)
+      const refusal = { preset: { id: 'cordis' }, reason }
+      act(() => { actions.store.set({ ...actions.store.getSnapshot(), error: refusal }) })
 
       // The host refuses a mount discovery reported healthy, so this banner is
       // the only place the cause appears — the chip has already reverted and
       // the settings row shows the preset as fine.
-      const banner = await screen.findByRole('alert')
+      const banner = screen.getByRole('alert')
       expect(banner.textContent).toContain(reason)
-      expect(banner.textContent).toContain('mine')
+      expect(banner.textContent).toContain(en.presetCordisName)
+      expect(screen.queryByRole('button')).toBeNull()
+
+      act(() => { vi.advanceTimersByTime(7000) })
+      act(() => { actions.store.set({ ...actions.store.getSnapshot(), error: { ...refusal } }) })
+      act(() => { vi.advanceTimersByTime(2001) })
+      expect(screen.getByRole('alert').textContent).toContain(reason)
 
       // Transient by design: it holds long enough to read a cause that names
       // packages, then leaves rather than sitting over the screen.
       act(() => { vi.advanceTimersByTime(9001) })
       expect(screen.queryByRole('alert')).toBeNull()
+      expect(actions.dismissRefusal).toHaveBeenCalledOnce()
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('says nothing when the switch lands', async () => {
+  it('says nothing when the chip opens the experts page', () => {
     const actions = renderSeat()
-
     fireEvent.click(screen.getByRole('button'))
-    fireEvent.click(screen.getByRole('menuitem', { name: /mine/ }))
-
-    await waitFor(() => { expect(actions.select).toHaveBeenCalledWith('mine') })
+    expect(actions.openExperts).toHaveBeenCalledOnce()
     expect(screen.queryByRole('alert')).toBeNull()
   })
 })
@@ -244,7 +255,7 @@ describe('the chip introduce cue', () => {
     vi.useFakeTimers()
     const actions = renderSeat({
       current: 'creator',
-      options: [{ id: 'creator', trust: 'user', name: 'CreatorMode' }],
+      options: [{ id: 'creator', name: 'CreatorMode' }],
       introduce: true,
     })
 
@@ -270,7 +281,7 @@ describe('the chip introduce cue', () => {
     vi.useFakeTimers()
     renderSeat({
       current: 'creator',
-      options: [{ id: 'creator', trust: 'user', name: '创造模式' }],
+      options: [{ id: 'creator', name: '创造专家' }],
       introduce: true,
     })
 
@@ -286,7 +297,7 @@ describe('the chip introduce cue', () => {
     vi.useFakeTimers()
     const actions = renderSeat({
       current: 'creator',
-      options: [{ id: 'creator', trust: 'user', name: 'C' }],
+      options: [{ id: 'creator', name: 'C' }],
       introduce: true,
     })
 
@@ -307,7 +318,7 @@ describe('the chip introduce cue', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })))
     const actions = renderSeat({
       current: 'creator',
-      options: [{ id: 'creator', trust: 'user', name: '' }],
+      options: [{ id: 'creator', name: '' }],
       introduce: true,
     })
 

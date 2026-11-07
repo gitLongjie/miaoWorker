@@ -10,22 +10,11 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Type-only: pulls the ctx.remote merge into this program.
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
-// The expert marker both this package's mode surfaces and the expert market
-// filter by; the display fold is the shared inline-safe home.
-import { isExpertPreset } from '@deepseek-ai/dsh-agent-presets/display'
-import type { AgentPresetRoster } from '@deepseek-ai/dsh-agent-presets/types'
+import type { AgentPresetRoster } from '@deepseek-ai/dsh-agent-preset-registry/types'
+import { isBuiltInPreset } from './locales.ts'
 
 /** The agent-preset settings namespace on the host wire. */
-export const AGENT_PRESET_SETTINGS_NS = 'agent-presets'
-
-/** Write only the named agent-preset settings fields. */
-async function writeAgentPresetSettings(
-  ctx: ClientContext,
-  patch: { default?: string; modeSelectionEnabled?: boolean },
-): Promise<string | undefined> {
-  const response = await ctx.remote.settings.update(AGENT_PRESET_SETTINGS_NS, patch, undefined)
-  return response.ok ? undefined : response.error.message
-}
+export const AGENT_PRESET_SETTINGS_NS = 'agent-preset-registry'
 
 /**
  * Persist one preset as the default for sessions created later.
@@ -35,38 +24,34 @@ async function writeAgentPresetSettings(
  * the host resolves at session creation.
  * @param ctx - the browser plugin context carrying the Remote namespaces.
  * @param id - the preset to make default.
+ * @param expectedRevision - optional fence for an automatic correction based on a previous settings read.
  * @returns the failure message, or undefined once the write landed.
  */
-export function writeDefaultPreset(
+export async function writeDefaultPreset(
   ctx: ClientContext,
   id: string,
+  expectedRevision?: number,
 ): Promise<string | undefined> {
-  return writeAgentPresetSettings(ctx, { default: id })
-}
-
-/**
- * Persist whether new-session surfaces expose preset selection.
- * @param ctx - the browser plugin context carrying the Remote namespaces.
- * @param enabled - whether the picker should be exposed.
- * @returns the failure message, or undefined once the write landed.
- */
-export function writeModeSelectionEnabled(
-  ctx: ClientContext,
-  enabled: boolean,
-): Promise<string | undefined> {
-  return writeAgentPresetSettings(ctx, { modeSelectionEnabled: enabled })
+  const response = await ctx.remote.settings.update(AGENT_PRESET_SETTINGS_NS, { selectedDefault: id }, expectedRevision)
+  return response.ok ? undefined : response.error.message
 }
 
 /** One selectable preset. */
 export interface AgentPresetOption {
   /** Preset id, written to Settings and the label's fallback. */
   id: string
-  /** Whether the preset ships with the deployment or was authored locally. */
-  trust: 'system' | 'user'
   /** Display name the preset published, absent when it published none. */
   name?: string
   /** One sentence on what the preset is for. */
   description?: string
+}
+
+/** Whether a shipped preset requires the Coding Tools preference.
+ * @param preset Roster entry; named custom overrides keep their own behavior.
+ * @returns True only for the built-in PTC and Minimal presets.
+ */
+export function requiresCodingTools(preset: AgentPresetOption | undefined): boolean {
+  return preset !== undefined && isBuiltInPreset(preset) && (preset.id === 'ptc' || preset.id === 'minimal')
 }
 
 /** One roster entry exactly as the host reports it. */
@@ -75,7 +60,7 @@ export type RosterPreset = AgentPresetRoster['presets'][number]
 /** The roster, or the message to show in its place. */
 export type RosterRead = { ok: true; value: AgentPresetRoster } | { ok: false; error: string }
 
-const EMPTY_ROSTER: AgentPresetRoster = { presets: [], authorable: false, modeSelectionEnabled: false }
+const EMPTY_ROSTER: AgentPresetRoster = { presets: [] }
 
 /**
  * Read the roster, turning a refusal into the message every surface shows.
@@ -126,7 +111,6 @@ export async function beginRosterRead<S extends { status: string; error: string 
 function asOption(preset: RosterPreset): AgentPresetOption {
   return {
     id: preset.id,
-    trust: preset.trust,
     ...preset.name === undefined ? {} : { name: preset.name },
     ...preset.description === undefined ? {} : { description: preset.description },
   }
@@ -143,20 +127,18 @@ export function presetDisplayEntries(presets: readonly RosterPreset[]): AgentPre
 }
 
 /**
- * The roster entries a mode surface offers: healthy presets that publish no
- * expert-card metadata.
- *
- * The chip exists to choose the NEXT session's composition, and a broken
- * preset cannot compose one — offering it would defer the discovery of that
- * fact to a failed session start; an expert-marked preset is the market's
- * inventory, so offering it as a mode would present one thing as two nouns.
- * The management section renders the non-expert roster (broken rows
- * included) from its own store instead.
+ * The roster entries a mode surface offers: every healthy preset, this
+ * deployment's shipped experts included. Upstream keeps expert-marked rows out
+ * of the menu so a preset presents once, over the expert market alone; this
+ * deployment wants the experts picked from the same menu as the modes, and the
+ * market stays as the card browser over the same rows. A broken preset cannot
+ * compose a session, so offering it would only defer the discovery of that
+ * fact to a failed session start.
  * @param presets - the roster the host answered with.
  * @returns one option per selectable preset, in roster order.
  */
 export function presetOptions(presets: readonly RosterPreset[]): AgentPresetOption[] {
-  return presets.filter(preset => preset.broken === undefined && !isExpertPreset(preset)).map(asOption)
+  return presetDisplayEntries(presets)
 }
 
 /** Agent-preset roster snapshot for the display surfaces. */
@@ -205,8 +187,6 @@ export class AgentPresetSettingsController {
     this.set({
       status: 'ready',
       error: null,
-      // Display, not selection: the label names a session already running an
-      // expert, so expert-marked rows stay nameable here.
       options: presetDisplayEntries(presets),
     })
   }

@@ -34,6 +34,25 @@ function headersToRecord(headers?: HeadersInit): Record<string, string> | undefi
   return { ...headers }
 }
 
+/** One request body as the IPC carrier forwards it: RPC text or exact bytes. */
+type TransportBody = string | Uint8Array<ArrayBuffer>
+
+/**
+ * Encode one fetch body for the IPC carrier. JSON RPC bodies stay text and
+ * binary bodies cross as bytes, because decoding bytes as text replaces every
+ * invalid UTF-8 sequence — an uploaded image would reach the Host corrupted.
+ * @param body - the body a caller supplied.
+ * @returns the body as text or exact bytes, or undefined without a body.
+ */
+async function transportBody(body: BodyInit | null | undefined): Promise<TransportBody | undefined> {
+  if (body === null || body === undefined) return undefined
+  if (typeof body === 'string') return body
+  if (body instanceof Blob) return new Uint8Array(await body.arrayBuffer())
+  if (body instanceof Uint8Array) return new Uint8Array(body)
+  if (body instanceof ArrayBuffer) return new Uint8Array(body)
+  throw new TypeError('desktop transport: only text, byte, and Blob bodies cross the IPC carrier')
+}
+
 /** One unary fetch through the IPC bridge. */
 async function ipcFetch(ipc: IpcBridge, input: URL, init: RequestInit): Promise<Response> {
   const requestId = randomUUID()
@@ -46,7 +65,7 @@ async function ipcFetch(ipc: IpcBridge, input: URL, init: RequestInit): Promise<
     path: `${input.pathname}${input.search}`,
     method: init.method ?? 'GET',
     headers: headersToRecord(init.headers),
-    body: typeof init.body === 'string' ? init.body : undefined,
+    body: await transportBody(init.body),
   }) as { status: number; body: number[]; contentType?: string }
   return new Response(new Uint8Array(res.body), {
     status: res.status,
@@ -55,11 +74,14 @@ async function ipcFetch(ipc: IpcBridge, input: URL, init: RequestInit): Promise<
 }
 
 /** A fetch-shaped IPC caller for the generic RPC channels (Typert gateway). */
-export function createIpcFetch(ipc: IpcBridge): (input: URL, init: RequestInit) => Promise<Response> {
-  return (input, init) => ipcFetch(ipc, input, init)
+export function createIpcFetch(ipc: IpcBridge): (input: string | URL, init: RequestInit) => Promise<Response> {
+  // The RPC caller hands over a document-relative route; the app scheme is a
+  // registered standard scheme, so the document base resolves it the same way
+  // the web app's real fetch would.
+  return (input, init) => ipcFetch(ipc, new URL(input, document.baseURI), init)
 }
 
-type StreamFrame = { streamId: string; item: unknown } | { streamId: string; kind: 'end' }
+type StreamFrame = { streamId: string; kind: 'item'; item: unknown } | { streamId: string; kind: 'end' }
 
 /** Worker-local opener for decoded Gateway Remote streams (client face's contract, restated
  * locally because the desktop render half compiles against the host face). */
@@ -97,7 +119,7 @@ export function createIpcStreamOpen(ipc: IpcBridge): RpcStreamOpen {
     }
     const offFrame = ipc.on('dsh:stream:frame', (data) => {
       const frame = data as { streamId: string; item: unknown }
-      enqueue({ streamId: frame.streamId, item: frame.item })
+      enqueue({ streamId: frame.streamId, kind: 'item', item: frame.item })
     })
     const offEnd = ipc.on('dsh:stream:end', (data) => {
       enqueue({ streamId: (data as { streamId: string }).streamId, kind: 'end' })
@@ -106,7 +128,8 @@ export function createIpcStreamOpen(ipc: IpcBridge): RpcStreamOpen {
     // the accepting side of the filter above, from the first one on.
     const opened = ipc
       .invoke('dsh:stream:open', { endpoint, payload })
-      .then(({ streamId: id }) => {
+      .then((claimed) => {
+        const { streamId: id } = claimed as { streamId: string }
         streamId = id
         ipc.send('dsh:stream:claim', id)
       })

@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
@@ -128,14 +129,20 @@ function h3VideoStub(
 }
 
 let callCounter = 0
-function callTool(ctx: Context, name: string, args: unknown, agent: Agent & { session: Session }) {
-  return ctx.tools.execute({
+async function callTool(ctx: Context, name: string, args: unknown, agent: Agent & { session: Session }) {
+  const batch = await ctx.tools.execute({
     signal: SIGNAL,
-    callId: ToolCallId(`call-${++callCounter}`),
-    name,
-    arguments: args,
+    calls: [{
+      type: 'tool-call',
+      id: ToolCallId(`call-${++callCounter}`),
+      name,
+      arguments: JSON.stringify(args ?? {}),
+    }],
     agent,
   })
+  const result = batch.results[0]?.result
+  if (result === undefined) throw new Error(`${name} produced no result`)
+  return result
 }
 
 /** The settled content blocks of one tool call, for asserting what the model and UI receive. */
@@ -416,6 +423,23 @@ describe('dsh-tool-video', () => {
     expect(planned.isError).toBe(true)
   })
 
+  it('renders a continuous fifteen-second shot without splitting it', async () => {
+    const { ctx, h3Video } = await setup()
+    const agent = agentWithSession()
+    const planned = await callTool(ctx, 'video_plan', {
+      ...PLAN_ARGS, mode: 'multi_shot',
+      segments: [{ ...PLAN_ARGS.segments[0], duration_seconds: 15,
+        references: [{ type: 'image', source: 'C:/opening.png', role: 'first_frame' }] }],
+    }, agent)
+    if (planned.isError) throw new Error('expected plan success')
+    const plan = planned.value as { id: string; segments: unknown[] }
+    expect(plan.segments).toHaveLength(1)
+    const rendered = await callTool(ctx, 'video_render', { plan_id: plan.id }, agent)
+    expect(rendered.isError).toBe(false)
+    expect(h3Video.requests).toHaveLength(1)
+    expect(h3Video.requests[0]?.durationSeconds).toBe(15)
+  })
+
   it('multi_shot renders the whole storyboard as ONE coherent task', async () => {
     const { ctx, h3Video, outputDir } = await setup()
     const agent = agentWithSession()
@@ -446,6 +470,8 @@ describe('dsh-tool-video', () => {
     expect(prompt?.type === 'text' && prompt.text).toContain('End state: 红杯在右手胸前')
     expect(prompt?.type === 'text' && prompt.text).toContain('Start state: 红杯在右手胸前')
     expect(prompt?.type === 'text' && prompt.text).toContain('do not repeat completed actions')
+    expect(prompt?.type === 'text' && prompt.text).toContain('exit, threshold crossing, travel direction, entry, and arrival')
+    expect(prompt?.type === 'text' && prompt.text).toContain('non_diegetic_music: N/A')
     expect(prompt?.type === 'text' && prompt.text).not.toContain('each shot a separate scene')
     expect(h3Video.requests[0]?.inputs).toHaveLength(2)
     expect(h3Video.requests[0]?.inputs[1]).toEqual({ type: 'image', url: opening, role: 'first_frame' })
@@ -472,6 +498,24 @@ describe('dsh-tool-video', () => {
     }
     expect(h3Video.requests).toHaveLength(0)
     expect(jobs.starts).toBe(0)
+  })
+
+  it('folds two five-second shots into one ten-second multi_shot request', async () => {
+    const { ctx, h3Video } = await setup()
+    const agent = agentWithSession()
+    const planned = await callTool(ctx, 'video_plan', {
+      ...MULTI_ARGS,
+      goal: 'ten second two-shot story',
+      segments: MULTI_ARGS.segments.map(segment => ({ ...segment, duration_seconds: 5 })),
+    }, agent)
+    if (planned.isError) throw new Error('expected plan success')
+    const planId = (planned.value as { id: string }).id
+    await callTool(ctx, 'video_keyframes', { plan_id: planId }, agent)
+    const rendered = await callTool(ctx, 'video_render', { plan_id: planId }, agent)
+    expect(rendered.isError).toBe(false)
+    expect(h3Video.requests).toHaveLength(1)
+    expect(h3Video.requests[0]?.durationSeconds).toBe(10)
+    expect((rendered.value as { submissions: Array<{ segmentId: string }> }).submissions[0]?.segmentId).toBe('all')
   })
 
   it('multi_shot rejects unsupported material, mixed routing, incomplete story states, and unknown assets', async () => {
@@ -614,32 +658,80 @@ describe('dsh-tool-video', () => {
     expect(request?.ratio).toBe('adaptive')
   })
 
-  it('degrades an authored first frame to reference_image when asset anchors exist', async () => {
+  it('preserves authored first and last frames instead of degrading them to asset references', async () => {
     const { ctx, h3Video } = await setup()
     const agent = agentWithSession()
     const planned = await callTool(ctx, 'video_plan', {
       ...PLAN_ARGS,
-      assets: [{ id: 'scene-1', name: '山顶', kind: 'scene', reference: 'C:/Users/demo/summit.png' }],
-      segments: [{
-        ...PLAN_ARGS.segments[0],
-        references: [{ type: 'image', source: 'C:/Users/demo/first-frame.png', role: 'first_frame' }],
-      }],
+      assets: [{ id: 'scene-1', name: '山顶', kind: 'scene', reference: 'C:/summit.png' }],
+      segments: [{ ...PLAN_ARGS.segments[0], references: [
+        { type: 'image', source: 'C:/first.png', role: 'first_frame' },
+        { type: 'image', source: 'C:/last.png', role: 'last_frame' },
+      ] }],
     }, agent)
     if (planned.isError) throw new Error('expected plan success')
-    const planId = (planned.value as { id: string }).id
+    await callTool(ctx, 'video_render', { plan_id: (planned.value as { id: string }).id }, agent)
+    expect(h3Video.requests[0]?.inputs.filter(input => input.type === 'image')).toEqual([
+      { type: 'image', url: 'C:/first.png', role: 'first_frame' },
+      { type: 'image', url: 'C:/last.png', role: 'last_frame' },
+    ])
+    expect(h3Video.requests[0]?.ratio).toBe('adaptive')
+  })
 
-    const rendered = await callTool(ctx, 'video_render', { plan_id: planId, segment_ids: ['s1'] }, agent)
-    expect(rendered.isError).toBe(false)
-    const request = h3Video.requests[0]
-    expect(request?.inputs.some(input => input.type === 'image' && input.role === 'first_frame')).toBe(false)
-    const references = request?.inputs.filter((input): input is Extract<SegmentInput, { type: 'image' }> =>
-      input.type === 'image' && input.role === 'reference_image') ?? []
-    expect(references).toHaveLength(2)
-    expect(references.some(ref => ref.url === 'C:/Users/demo/first-frame.png')).toBe(true)
-    expect(references.some(ref => ref.url === 'C:/Users/demo/summit.png')).toBe(true)
-    const prompt = request?.inputs.find(input => input.type === 'text')
-    expect(prompt?.type === 'text' && prompt.text).toContain('<Picture 1> opening frame')
-    expect(prompt?.type === 'text' && prompt.text).toContain('<Picture 2> 山顶 (scene)')
+  it('draws a closing target from end_state without overwriting the opening still', async () => {
+    const { ctx, h3Video, outputDir } = await setup()
+    const agent = agentWithSession()
+    const planned = await callTool(ctx, 'video_plan', {
+      ...PLAN_ARGS,
+      segments: [{ ...PLAN_ARGS.segments[0], end_state: '电梯门完全打开，人物仍在门内等待' }],
+    }, agent)
+    if (planned.isError) throw new Error('expected plan success')
+    const id = (planned.value as { id: string }).id
+    await callTool(ctx, 'video_keyframes', { plan_id: id }, agent)
+    const opening = readFileSync(join(outputDir, 'keyframes', `${id}-s1.png`))
+    const result = await callTool(ctx, 'video_keyframes', { plan_id: id, frame: 'closing' }, agent)
+    expect(result.isError).toBe(false)
+    expect(h3Video.keyframeRequests[1]?.prompt).toContain('电梯门完全打开，人物仍在门内等待')
+    expect(existsSync(join(outputDir, 'keyframes', `${id}-s1-closing.png`))).toBe(true)
+    expect(readFileSync(join(outputDir, 'keyframes', `${id}-s1.png`))).toEqual(opening)
+  })
+
+  it('rejects a closing target for multi_shot before generating images', async () => {
+    const { ctx, h3Video } = await setup()
+    const agent = agentWithSession()
+    const planned = await callTool(ctx, 'video_plan', MULTI_ARGS, agent)
+    if (planned.isError) throw new Error('expected plan success')
+    const result = await callTool(ctx, 'video_keyframes', {
+      plan_id: (planned.value as { id: string }).id, frame: 'closing',
+    }, agent)
+    expect(result.isError).toBe(true)
+    expect(h3Video.keyframeRequests).toHaveLength(0)
+  })
+
+  it('uses only the front column of a four-view design for single-subject keyframes', async () => {
+    const { ctx, h3Video, outputDir } = await setup()
+    const agent = agentWithSession()
+    const reference = join(outputDir, 'design.ppm')
+    const pixels = Buffer.alloc(80 * 40 * 3)
+    for (let y = 0; y < 40; y += 1) {
+      for (let x = 0; x < 80; x += 1) pixels[(y * 80 + x) * 3 + (x < 20 ? 0 : 2)] = 255
+    }
+    writeFileSync(reference, Buffer.concat([Buffer.from('P6\n80 40\n255\n'), pixels]))
+    const planned = await callTool(ctx, 'video_plan', {
+      ...PLAN_ARGS,
+      assets: [{ id: 'hero', name: '林晓', kind: 'character', reference, referenceLayout: 'four-column' }],
+      segments: [{ ...PLAN_ARGS.segments[0], prompt: '林晓站在门口', asset_ids: ['hero'] }],
+    }, agent)
+    if (planned.isError) throw new Error('expected plan success')
+    const result = await callTool(ctx, 'video_keyframes', { plan_id: (planned.value as { id: string }).id }, agent)
+    expect(result.isError).toBe(false)
+    const subject = h3Video.keyframeRequests[0]?.subjectReference
+    expect(subject).toBeDefined()
+    if (subject === undefined) throw new Error('expected cropped subject')
+    expect(subject).not.toBe(reference)
+    const cropped = execFileSync('ffmpeg', ['-v', 'error', '-i', subject, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+    expect(cropped.length).toBe(20 * 40 * 3)
+    expect(cropped.subarray(0, 3)).toEqual(Buffer.from([255, 0, 0]))
   })
 
   it('video_assets records user-provided materials and render anchors shots on them', async () => {
@@ -746,11 +838,9 @@ describe('dsh-tool-video', () => {
     const planId = (planned.value as { id: string }).id
 
     const content = await callToolContent(ctx, 'video_asset_images', { plan_id: planId }, agent)
-    // A character contributes its full-body reference and its turnaround sheet, each with an
-    // attachment envelope, then the notice.
-    expect(content.filter(block => block.type === 'image')).toHaveLength(2)
+    // A character contributes one full-body reference attachment, then the notice.
+    expect(content.filter(block => block.type === 'image')).toHaveLength(1)
     expect(content[0]?.text).toContain('character 马锅头')
-    expect(content[2]?.text).toContain('character 马锅头 sheet')
   })
 
   it('injects the plan style and one shared seed into every segment request', async () => {
@@ -815,6 +905,29 @@ describe('dsh-tool-video', () => {
     expect(references).toEqual(['C:/Users/demo/summit.png'])
   })
 
+  it('derives an empty scene viewpoint from the selected master and allows text-only previews', async () => {
+    const { ctx, h3Video } = await setup()
+    const agent = agentWithSession()
+    const planned = await callTool(ctx, 'video_plan', {
+      ...PLAN_ARGS,
+      assets: [
+        { id: 'office', name: '办公室', kind: 'scene', prompt: '玻璃门在北墙，通道向东延伸', reference: 'C:/office.png' },
+        { id: 'lift', name: '电梯', kind: 'scene', reference: 'C:/lift.png' },
+      ],
+      segments: [{ ...PLAN_ARGS.segments[0], id: 's1', asset_ids: ['office'], prompt: '办公室空镜', camera: '南墙朝北' }],
+    }, agent)
+    if (planned.isError) throw new Error('expected plan success')
+    const planId = (planned.value as { id: string }).id
+    await callTool(ctx, 'video_keyframes', { plan_id: planId }, agent)
+    expect(h3Video.keyframeRequests[0]?.subjectReference).toBe('C:/office.png')
+    expect(h3Video.keyframeRequests[0]?.prompt).toContain('玻璃门在北墙，通道向东延伸')
+    expect(h3Video.keyframeRequests[0]?.prompt).toContain('南墙朝北')
+    expect(h3Video.keyframeRequests[0]?.prompt).toContain('不新增人物')
+    expect(h3Video.keyframeRequests[0]?.prompt).not.toContain('保持参考图中人物的脸')
+    await callTool(ctx, 'video_keyframes', { plan_id: planId, identity: 'text' }, agent)
+    expect(h3Video.keyframeRequests[1]?.subjectReference).toBeUndefined()
+  })
+
   it('conditions generated keyframes on the character the shot names, with the plan style and seed', async () => {
     const { ctx, h3Video } = await setup()
     const agent = agentWithSession()
@@ -848,6 +961,30 @@ describe('dsh-tool-video', () => {
     expect(h3Video.keyframeRequests[0]?.subjectReference).toBeUndefined()
   })
 
+  it('preserves asset images across plan and asset revisions and clears old layout on replacement', async () => {
+    const { ctx, h3Video } = await setup()
+    const agent = agentWithSession()
+    const original = { id: 'hero', name: '林晓', kind: 'character', reference: 'C:/hero.png', referenceLayout: 'four-column' }
+    const created = await callTool(ctx, 'video_plan', { ...PLAN_ARGS, assets: [original] }, agent)
+    if (created.isError) throw new Error('expected plan success')
+    const planId = (created.value as { id: string }).id
+    const update = { id: 'hero', name: '林晓', kind: 'character', prompt: '灰开衫，黑短靴' }
+    const revised = await callTool(ctx, 'video_plan', { ...PLAN_ARGS, plan_id: planId, assets: [update] }, agent)
+    expect((revised.value as { assets: unknown[] }).assets).toContainEqual(expect.objectContaining({ ...update, reference: original.reference, referenceLayout: 'four-column' }))
+    const recorded = await callTool(ctx, 'video_assets', { plan_id: planId, assets: [{ ...update, description: '疲惫克制' }] }, agent)
+    expect((recorded.value as { assets: unknown[] }).assets).toContainEqual(expect.objectContaining({ reference: original.reference, referenceLayout: 'four-column' }))
+    const imported = await callTool(ctx, 'video_plan', {
+      ...PLAN_ARGS, library_assets: ['林晓'], assets: [{ ...update, description: '素材库导入后更新' }],
+    }, agent)
+    expect((imported.value as { assets: unknown[] }).assets).toContainEqual(expect.objectContaining({
+      reference: original.reference, referenceLayout: 'four-column', description: '素材库导入后更新',
+    }))
+    const replaced = await callTool(ctx, 'video_assets', { plan_id: planId, assets: [{ ...update, reference: 'C:/new-portrait.png' }] }, agent)
+    expect((replaced.value as { assets: Array<{ referenceLayout?: string }> }).assets[0]?.referenceLayout).toBeUndefined()
+    await callTool(ctx, 'video_asset_images', { plan_id: planId }, agent)
+    expect(h3Video.keyframeRequests[0]?.subjectReference).toBe('C:/new-portrait.png')
+  })
+
   it('keeps the plan seed across revisions and honors an explicit one', async () => {
     const { ctx } = await setup()
     const agent = agentWithSession()
@@ -871,7 +1008,7 @@ describe('dsh-tool-video', () => {
     expect(derivedSeed).toBeLessThan(2 ** 32)
   })
 
-  it('generates one full-body character reference and can replace it on request', async () => {
+  it('generates one four-view character design and can replace it on request', async () => {
     const { ctx, h3Video } = await setup()
     const agent = agentWithSession()
     const planned = await callTool(ctx, 'video_plan', {
@@ -883,113 +1020,66 @@ describe('dsh-tool-video', () => {
 
     const first = await callTool(ctx, 'video_asset_images', { plan_id: planId }, agent)
     if (first.isError) throw new Error('expected asset image success')
-    // The reference, then the turnaround sheet drawn from that reference.
-    expect(h3Video.keyframeRequests).toHaveLength(2)
+    expect(h3Video.keyframeRequests).toHaveLength(1)
     expect(h3Video.keyframeRequests[0]?.prompt).toContain('全身')
     expect(h3Video.keyframeRequests[0]?.prompt).toContain('full-body')
     expect(h3Video.keyframeRequests[0]?.prompt).toContain('头顶到鞋底')
     expect(h3Video.keyframeRequests[0]?.prompt).toContain('鞋子')
     expect(h3Video.keyframeRequests[0]?.prompt).toContain('短发，深蓝工装')
     expect(h3Video.keyframeRequests[0]?.prompt).toContain('不要半身像')
-    expect(h3Video.keyframeRequests[0]?.prompt).toContain('不要三视图')
-    expect(h3Video.keyframeRequests[0]?.ratio).toBe('3:4')
+    expect(h3Video.keyframeRequests[0]?.prompt).toContain('正面全身、左侧面全身、背面全身、正面面部特写')
+    expect(h3Video.keyframeRequests[0]?.prompt).toContain('三条竖直分隔线')
+    expect(h3Video.keyframeRequests[0]?.prompt).toContain('PANEL 1 FRONT FULL BODY')
+    expect(h3Video.keyframeRequests[0]?.prompt).toContain('四个面板缺一不可')
+    expect(h3Video.keyframeRequests[0]?.ratio).toBe('16:9')
     expect(h3Video.keyframeRequests[0]?.subjectReference).toBeUndefined()
+    const firstAsset = (first.value as { assets: Array<{ image?: string; sheet?: string; referenceLayout?: string }> }).assets[0]
+    expect(firstAsset?.image).toContain(`${planId}-char-1.png`)
+    expect(firstAsset?.referenceLayout).toBe('four-column')
+    expect(firstAsset?.sheet).toBeUndefined()
 
-    const firstAsset = (first.value as { assets: Array<{ image?: string; sheet?: string }> }).assets[0]
-    expect(firstAsset?.sheet).toContain(`${planId}-char-1-sheet.png`)
-    // The sheet is a turnaround of the reference, never a separate invention.
-    expect(h3Video.keyframeRequests[1]?.prompt).toContain('三视图')
-    expect(h3Video.keyframeRequests[1]?.prompt).toContain('正面、侧面、背面')
-    expect(h3Video.keyframeRequests[1]?.prompt).toContain('短发，深蓝工装')
-    expect(h3Video.keyframeRequests[1]?.ratio).toBe('16:9')
-    expect(h3Video.keyframeRequests[1]?.subjectReference).toBe(firstAsset?.image)
-
-    // A confirmed reference and sheet are not regenerated by a plain re-run.
     const second = await callTool(ctx, 'video_asset_images', { plan_id: planId }, agent)
     if (second.isError) throw new Error('expected a successful run')
     expect((second.value as { assets: Array<{ state: string }> }).assets[0]?.state).toBe('skipped')
-    expect(h3Video.keyframeRequests).toHaveLength(2)
+    expect(h3Video.keyframeRequests).toHaveLength(1)
 
-    // A regenerate with another seed replaces both, and the plan points at the new pair.
     const regenerated = await callTool(ctx, 'video_asset_images', { plan_id: planId, regenerate: true, seed: 99 }, agent)
     if (regenerated.isError) throw new Error('expected a successful regenerate')
-    expect(h3Video.keyframeRequests).toHaveLength(4)
-    expect(h3Video.keyframeRequests[2]?.seed).toBe(99)
-    expect(h3Video.keyframeRequests[3]?.seed).toBe(99)
+    expect(h3Video.keyframeRequests).toHaveLength(2)
+    expect(h3Video.keyframeRequests[1]?.seed).toBe(99)
     const replacement = (regenerated.value as { assets: Array<{ image?: string; sheet?: string }> }).assets[0]
     expect(replacement?.image).toBeDefined()
-    expect(replacement?.sheet).toBeDefined()
-    expect(h3Video.keyframeRequests[3]?.subjectReference).toBe(replacement?.image)
+    expect(replacement?.sheet).toBeUndefined()
     const reread = await callTool(ctx, 'video_assets', { plan_id: planId, assets: [] }, agent)
     if (reread.isError) throw new Error('expected a plan read')
     const rereadAsset = (reread.value as { assets?: Array<{ reference?: string; sheet?: string }> }).assets?.[0]
     expect(rereadAsset?.reference).toBe(replacement?.image)
-    expect(rereadAsset?.sheet).toBe(replacement?.sheet)
+    expect(rereadAsset?.sheet).toBeUndefined()
   })
-
-  it('draws the turnaround sheet alone when a confirmed reference has none', async () => {
+  it('upgrades a legacy portrait using its identity and reuses the resulting four-column image', async () => {
     const { ctx, outputDir, h3Video } = await setup()
     const agent = agentWithSession()
     const planned = await callTool(ctx, 'video_plan', {
       ...PLAN_ARGS,
-      assets: [{ id: 'char-1', name: '小明', kind: 'character', reference: 'C:/confirmed/xiaoming.png' }],
+      assets: [
+        { id: 'hero', name: '林晓', kind: 'character', reference: 'C:/old-portrait.png' },
+        { id: 'room', name: '办公室', kind: 'scene', reference: 'C:/office.png' },
+      ],
     }, agent)
     if (planned.isError) throw new Error('expected plan success')
     const planId = (planned.value as { id: string }).id
-
     const generated = await callTool(ctx, 'video_asset_images', { plan_id: planId }, agent)
-    if (generated.isError) throw new Error('expected asset image success')
-    // One request, for the sheet: the confirmed reference is the anchor and is not redrawn.
+    expect(generated.isError).toBe(false)
     expect(h3Video.keyframeRequests).toHaveLength(1)
-    expect(h3Video.keyframeRequests[0]?.subjectReference).toBe('C:/confirmed/xiaoming.png')
-    const result = (generated.value as { assets: Array<{ state: string; image?: string; sheet?: string }> }).assets[0]
-    expect(result?.state).toBe('generated')
-    expect(result?.image).toBe('C:/confirmed/xiaoming.png')
-    expect(result?.sheet).toContain(`${planId}-char-1-sheet.png`)
-
-    const planFile = join(outputDir, 'plans', `${planId}.json`)
-    const saved = JSON.parse(readFileSync(planFile, 'utf8')) as { assets: [Record<string, unknown>] }
-    expect(saved.assets[0]).toMatchObject({ reference: 'C:/confirmed/xiaoming.png', sheet: result?.sheet })
-  })
-
-  it('keeps the reference when the turnaround sheet fails, and retries it later', async () => {
-    const { ctx, outputDir, h3Video } = await setup()
-    const agent = agentWithSession()
-    const planned = await callTool(ctx, 'video_plan', {
-      ...PLAN_ARGS,
-      assets: [{ id: 'char-1', name: '小明', kind: 'character', description: '短发，深蓝工装' }],
-    }, agent)
-    if (planned.isError) throw new Error('expected plan success')
-    const planId = (planned.value as { id: string }).id
-    let calls = 0
-    h3Video.keyframe = async () => {
-      calls += 1
-      if (calls === 2) throw new Error('sheet model unavailable')
-      const file = join(outputDir, `drawn-${calls}.png`)
-      writeFileSync(file, 'png')
-      return file
-    }
-
-    const generated = await callTool(ctx, 'video_asset_images', { plan_id: planId }, agent)
-    if (generated.isError) throw new Error('expected the asset itself to succeed')
-    const value = generated.value as {
-      assets: Array<{ state: string; image?: string; sheet?: string }>
-      notice: string
-    }
-    expect(value.assets[0]?.state).toBe('generated')
-    expect(value.assets[0]?.image).toContain(`${planId}-char-1.png`)
-    expect(value.assets[0]?.sheet).toBeUndefined()
-    expect(value.notice).toContain('turnaround sheet(s) failed')
-    expect(value.notice).toContain('sheet model unavailable')
-
-    // The missing sheet keeps the character eligible, so the next ordinary call retries only it.
-    calls = 0
-    const retried = await callTool(ctx, 'video_asset_images', { plan_id: planId }, agent)
-    if (retried.isError) throw new Error('expected a retry')
-    expect(h3Video.keyframeRequests).toHaveLength(0)
-    const retriedValue = retried.value as { assets: Array<{ state: string; sheet?: string }> }
-    expect(retriedValue.assets[0]?.state).toBe('generated')
-    expect(retriedValue.assets[0]?.sheet).toContain(`${planId}-char-1-sheet.png`)
+    expect(h3Video.keyframeRequests[0]).toMatchObject({ subjectReference: 'C:/old-portrait.png', ratio: '16:9' })
+    expect(h3Video.keyframeRequests[0]?.prompt).toContain('PANEL 3 BACK FULL BODY')
+    const plan = JSON.parse(readFileSync(join(outputDir, 'plans', `${planId}.json`), 'utf8')) as { assets: Array<{ referenceLayout?: string }> }
+    expect(plan.assets[0]?.referenceLayout).toBe('four-column')
+    const again = await callTool(ctx, 'video_asset_images', { plan_id: planId }, agent)
+    expect((again.value as { assets: Array<{ state: string }> }).assets.map(asset => asset.state)).toEqual(['skipped', 'skipped'])
+    expect(h3Video.keyframeRequests).toHaveLength(1)
+    const library = await callTool(ctx, 'video_library', {}, agent)
+    expect((library.value as { assets: unknown[] }).assets).toContainEqual(expect.objectContaining({ name: '林晓', referenceLayout: 'four-column' }))
   })
 
   it('generates a people-free establishing shot and a neutral prop reference, with no sheet', async () => {
@@ -1012,6 +1102,7 @@ describe('dsh-tool-video', () => {
     // A set is a wide establishing shot with nobody in it; a prop is a neutral square reference.
     expect(h3Video.keyframeRequests[0]?.ratio).toBe('16:9')
     expect(h3Video.keyframeRequests[0]?.prompt).toContain('画面中没有任何人物')
+    expect(h3Video.keyframeRequests[0]?.prompt).toContain('不是四宫格')
     expect(h3Video.keyframeRequests[0]?.prompt).toContain('冷灰色调')
     expect(h3Video.keyframeRequests[1]?.ratio).toBe('1:1')
     expect(h3Video.keyframeRequests[1]?.prompt).toContain('道具参考图')
@@ -1038,49 +1129,7 @@ describe('dsh-tool-video', () => {
     expect(result).toMatchObject({ state: 'failed', error: 'image host down' })
   })
 
-  it('replaces a character reference and its sheet together on regeneration', async () => {
-    const { ctx, outputDir, h3Video } = await setup()
-    const agent = agentWithSession()
-    const planned = await callTool(ctx, 'video_plan', {
-      ...PLAN_ARGS,
-      assets: [{ id: 'char-1', name: '小明', kind: 'character', reference: 'C:/old-portrait.png' }],
-      segments: [{ ...PLAN_ARGS.segments[0], prompt: '小明走向门口' }],
-    }, agent)
-    if (planned.isError) throw new Error('expected plan success')
-    const planId = (planned.value as { id: string }).id
-    const planFile = join(outputDir, 'plans', `${planId}.json`)
-    const legacySheet = join(outputDir, 'old-sheet.png')
-    writeFileSync(legacySheet, 'legacy image')
-    const plan = JSON.parse(readFileSync(planFile, 'utf8')) as { assets: [Record<string, unknown>] }
-    plan.assets[0].sheet = legacySheet
-    writeFileSync(planFile, JSON.stringify(plan))
-
-    // A character that already carries both images is left alone.
-    await callTool(ctx, 'video_asset_images', { plan_id: planId }, agent)
-    expect(h3Video.keyframeRequests).toHaveLength(0)
-    const untouched = JSON.parse(readFileSync(planFile, 'utf8')) as { assets: [Record<string, unknown>] }
-    expect(untouched.assets[0].sheet).toBe(legacySheet)
-
-    const generated = await callTool(ctx, 'video_asset_images', { plan_id: planId, regenerate: true }, agent)
-    if (generated.isError) throw new Error('expected regeneration success')
-    expect(h3Video.keyframeRequests).toHaveLength(2)
-    const result = (generated.value as { assets: Array<{ image?: string; sheet?: string }> }).assets[0]
-    expect(result?.image).toBeDefined()
-    expect(result?.sheet).toBeDefined()
-    expect(result?.sheet).not.toBe(legacySheet)
-    const migrated = JSON.parse(readFileSync(planFile, 'utf8')) as { assets: [Record<string, unknown>] }
-    expect(migrated.assets[0]).toMatchObject({ reference: result?.image, sheet: result?.sheet })
-    const library = JSON.parse(readFileSync(join(outputDir, 'assets', 'library.json'), 'utf8')) as { assets: [Record<string, unknown>] }
-    expect(library.assets[0]).toMatchObject({ reference: result?.image, sheet: result?.sheet })
-    // The old sheet file stays on disk so the previous design remains recoverable.
-    expect(existsSync(legacySheet)).toBe(true)
-
-    // Keyframes condition on the reference, never on the sheet.
-    await callTool(ctx, 'video_keyframes', { plan_id: planId }, agent)
-    expect(h3Video.keyframeRequests[2]?.subjectReference).toBe(result?.image)
-  })
-
-  it('keeps legacy character anchors when regeneration fails', async () => {
+  it('keeps legacy character anchors when their four-view upgrade fails', async () => {
     const { ctx, outputDir, h3Video } = await setup()
     const agent = agentWithSession()
     const planned = await callTool(ctx, 'video_plan', {
@@ -1095,7 +1144,7 @@ describe('dsh-tool-video', () => {
     writeFileSync(planFile, JSON.stringify(plan))
     h3Video.keyframe = async () => { throw new Error('image provider unavailable') }
 
-    const generated = await callTool(ctx, 'video_asset_images', { plan_id: planId, regenerate: true }, agent)
+    const generated = await callTool(ctx, 'video_asset_images', { plan_id: planId }, agent)
     if (generated.isError) throw new Error('expected per-asset failure')
     expect((generated.value as { assets: Array<{ state: string }> }).assets[0]?.state).toBe('failed')
     const failed = JSON.parse(readFileSync(planFile, 'utf8')) as { assets: [Record<string, unknown>] }
@@ -1266,6 +1315,83 @@ describe('dsh-tool-video', () => {
     expect(new Set(value.submissions.map(entry => entry.jobId)).size).toBe(1)
     expect(jobs.starts).toBe(1)
     expect(value.notice).toContain('chained render')
+    await jobs.lastHooks?.done
+  })
+
+  it('refuses independent rendering when a per-segment storyboard declares continued action', async () => {
+    const { ctx } = await setup()
+    const agent = agentWithSession()
+    const planned = await callTool(ctx, 'video_plan', {
+      ...PLAN_ARGS,
+      assets: [
+        { id: 'char-1', name: '林晓', kind: 'character', reference: 'C:/lin.png' },
+        { id: 'scene-1', name: '电梯', kind: 'scene', reference: 'C:/elevator.png' },
+        { id: 'scene-2', name: '走廊', kind: 'scene', reference: 'C:/corridor.png' },
+      ],
+      segments: [
+        { id: 's1', prompt: '林晓在电梯门口，迈出一步', asset_ids: ['char-1', 'scene-1'], start_state: '林晓在电梯门口', event: '迈出一步', end_state: '林晓前脚跨过门槛', duration_seconds: 6, resolution: '768P', ratio: '16:9', backend: 'local' },
+        { id: 's2', prompt: '林晓脚掌落地后继续走向走廊', asset_ids: ['char-1', 'scene-2'], continuity: 'continue', start_state: '林晓前脚跨过门槛', event: '脚掌落地后继续走向走廊', end_state: '林晓走到走廊中段', duration_seconds: 6, resolution: '768P', ratio: '16:9', backend: 'local' },
+      ],
+    }, agent)
+    if (planned.isError) throw new Error('expected plan success')
+    const planId = (planned.value as { id: string }).id
+    const rendered = await callTool(ctx, 'video_render', { plan_id: planId }, agent)
+    expect(rendered.isError).toBe(true)
+    if (!rendered.isError) throw new Error('expected render refusal')
+    expect(rendered.error.message).toContain('chain=true')
+  })
+
+  it('stops a chain before the next submission when the completed clip has no decodable tail frame', async () => {
+    const { ctx, outputDir, jobs, h3Video } = await setup()
+    const agent = agentWithSession()
+    const planned = await callTool(ctx, 'video_plan', {
+      ...PLAN_ARGS,
+      segments: [PLAN_ARGS.segments[0], { ...PLAN_ARGS.segments[1], continuity: 'continue' }],
+    }, agent)
+    if (planned.isError) throw new Error('expected plan success')
+    writeFileSync(join(outputDir, 'seg.mp4'), 'not a decodable video')
+    const rendered = await callTool(ctx, 'video_render', {
+      plan_id: (planned.value as { id: string }).id, chain: true,
+    }, agent)
+    expect(rendered.isError).toBe(false)
+    expect(await jobs.lastHooks?.done).toMatchObject({ status: 'failed' })
+    expect(jobs.lastHooks?.readOutput()).toContain('the next shot was not submitted')
+    expect(h3Video.requests).toHaveLength(1)
+  })
+
+  it('does not chain a prior frame into an explicit scene cut', async () => {
+    const { ctx, outputDir, jobs, h3Video } = await setup()
+    const agent = agentWithSession()
+    const planned = await callTool(ctx, 'video_plan', {
+      ...PLAN_ARGS,
+      segments: [PLAN_ARGS.segments[0], { ...PLAN_ARGS.segments[1], continuity: 'cut' }],
+    }, agent)
+    if (planned.isError) throw new Error('expected plan success')
+    h3Video.poll = async () => {
+      const file = join(outputDir, 'seg.mp4')
+      writeFileSync(file, 'clip')
+      return { state: 'succeeded', localFile: file }
+    }
+    await callTool(ctx, 'video_render', { plan_id: (planned.value as { id: string }).id, chain: true }, agent)
+    expect(await jobs.lastHooks?.done).toMatchObject({ status: 'completed' })
+    expect(h3Video.requests).toHaveLength(2)
+    expect(h3Video.requests[1]?.inputs.some(input => input.type === 'image' && input.role === 'first_frame')).toBe(false)
+  })
+
+  it('generates three full-body views and a face close-up in one image', async () => {
+    const { ctx, h3Video } = await setup()
+    const agent = agentWithSession()
+    const planned = await callTool(ctx, 'video_plan', {
+      ...PLAN_ARGS,
+      assets: [{ id: 'char-1', name: '林晓', kind: 'character', prompt: '疲惫的三十岁女性' }],
+      segments: [{ ...PLAN_ARGS.segments[0], prompt: '林晓站在电梯里', asset_ids: ['char-1'] }],
+    }, agent)
+    if (planned.isError) throw new Error('expected plan success')
+    const generated = await callTool(ctx, 'video_asset_images', { plan_id: (planned.value as { id: string }).id }, agent)
+    expect(generated.isError).toBe(false)
+    expect(h3Video.keyframeRequests).toHaveLength(1)
+    expect(h3Video.keyframeRequests[0]?.ratio).toBe('16:9')
+    expect(h3Video.keyframeRequests[0]?.prompt).toContain('正面面部特写')
   })
 
   it('dips through black between shots when the caller asks for it', async () => {

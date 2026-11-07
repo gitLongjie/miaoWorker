@@ -20,3 +20,16 @@
 # lives only on the dev webserver, so the browser row stays disabled here.
 - id: client-hmr
   disabled: true
+# This deployment signs users into the Claw gateway (the `deepagens` route,
+# named by the OEM gatewayProviderName); the official DeepSeek account route
+# has no sign-in surface here, so its row stays off the directory, the Models
+# page, and the model catalog.
+- id: llm-deepseek-account
+  disabled: true
+# The video workbench sidebar and its host routes stay development-only until
+# the shipped product is ready to expose them. The branded desktop launcher
+# sets `DSH_DESKTOP_DEV=1`; installed builds leave it unset and hide both rows.
+- id: video-workbench
+  disabled: !!js process.env.DSH_DESKTOP_DEV !== '1'
+- id: ui-video-workbench
+  disabled: !!js process.env.DSH_DESKTOP_DEV !== '1'

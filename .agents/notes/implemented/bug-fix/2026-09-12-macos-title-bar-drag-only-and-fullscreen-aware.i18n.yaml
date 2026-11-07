@@ -1,6 +1,22 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for 2026-09-12-macos-title-bar-drag-only-and-fullscreen-aware.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-12-macos-title-bar-drag-only-and-fullscreen-aware.md
-2026-09-12-macos-title-bar-drag-only-and-fullscreen-aware.md: 4f703f5a703681c29fb9105b9170ff1bac64831f
-2026-09-12-macos-title-bar-drag-only-and-fullscreen-aware.zh.md: 86c7bf8e6b75ec7284eae59c05c5e818d1a46ab2
+/agent-note-the-macos-title-bar-follows-native-fullscreen:
+  en: f5eb7df92e7bfee1
+  zh: a25e9db8fd10998a
+/agent-note-the-macos-title-bar-follows-native-fullscreen/problem:
+  en: 59875c4220247379
+  zh: 2de3af8512d2c81d
+/agent-note-the-macos-title-bar-follows-native-fullscreen/decision:
+  en: 5f86afd2627f068c
+  zh: 23609026f218f171
+/agent-note-the-macos-title-bar-follows-native-fullscreen/alternatives-considered:
+  en: 42504db30ba2ac93
+  zh: 8a66814d91547105
+/agent-note-the-macos-title-bar-follows-native-fullscreen/verification:
+  en: ed949cba9b3a2f51
+  zh: 7279abf303f9925c
+/agent-note-the-macos-title-bar-follows-native-fullscreen/consequences:
+  en: 4755d5bd5f9da425
+  zh: 4ca38d7dda28c99b

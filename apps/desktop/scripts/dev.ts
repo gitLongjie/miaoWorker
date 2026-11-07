@@ -21,9 +21,13 @@ const electronEnvironment = {
   ...process.env,
   DSH_DESKTOP_PRODUCT_NAME: DESKTOP_PRODUCT_NAME,
   DSH_DESKTOP_UPDATE_URL: DESKTOP_UPDATE_URL,
+  // The branded dev exe reports app.isPackaged like the installed build; this
+  // flag is what lets the updater tell the two apart (development never
+  // checks the OEM feed).
+  DSH_DESKTOP_DEV: '1',
 }
 
-function run(cmd: string, cmdArgs: readonly string[], opts: { cwd?: string } = {}): void {
+function run(cmd: string, cmdArgs: readonly string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): void {
   const windows = process.platform === 'win32'
   const executable = windows ? process.env.ComSpec ?? 'cmd.exe' : cmd
   const args = windows
@@ -44,9 +48,14 @@ function run(cmd: string, cmdArgs: readonly string[], opts: { cwd?: string } = {
 function refreshLocalImPlugin(): void {
   const source = resolve(root, '..', '..', 'dsh-im', 'dsh-im-main')
   run('npm', ['run', 'build'], { cwd: source })
-  const target = resolve(process.env.DSH_HOME ?? `${process.env.USERPROFILE ?? ''}\\.dsh`, 'profiles', 'web', 'node_modules', '@xmanrui', 'dsh-im', 'lib')
+  const packageDir = resolve(process.env.DSH_HOME ?? `${process.env.USERPROFILE ?? ''}\\.dsh`, 'profiles', 'web', 'node_modules', '@xmanrui', 'dsh-im')
+  const target = resolve(packageDir, 'lib')
   mkdirSync(target, { recursive: true })
   for (const file of ['client.js', 'index.js']) copyFileSync(resolve(source, 'lib', file), resolve(target, file))
+  // The Loader resolves the package from this directory. lib/ alone has no
+  // manifest, so Node looks for index.js at the package root and the entry fails.
+  copyFileSync(resolve(source, 'cordis.patch.yml'), resolve(packageDir, 'cordis.patch.yml'))
+  copyFileSync(resolve(source, 'package.json'), resolve(packageDir, 'package.json'))
 }
 
 /** Build the checked-out business-entry plugin and refresh the active Web profile copy. */
@@ -134,32 +143,31 @@ async function launchBrandedWindowsElectron(): Promise<ReturnType<typeof spawn>>
 }
 
 /**
- * Write the branded exe, retrying briefly because a freshly written exe can
- * stay locked for a moment by antivirus or the search indexer. A lock that
- * outlives the retries means the previous dev instance still runs the file —
- * Windows refuses to overwrite a running executable — so the error names that
- * remedy instead of surfacing a raw EBUSY stack.
+ * Write the branded exe despite transient locks. A freshly written exe can
+ * stay locked for a moment by antivirus or the search indexer; a lock that
+ * outlives the first retry round means the previous dev instance still runs
+ * the file — Windows refuses to overwrite a running executable — so the
+ * launcher terminates that stale instance (the dev-branded exe is this
+ * launcher's own artifact, never the packaged product) and retries once
+ * before surfacing a lock it cannot clear.
  */
 async function writeBrandedExecutable(brandedExecutable: string, contents: Buffer): Promise<void> {
   const name = basename(brandedExecutable)
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      writeFileSync(brandedExecutable, contents)
-      return
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== 'EBUSY' && code !== 'EPERM') throw error
-      if (attempt < 3) {
-        await new Promise<void>(wake => setTimeout(wake, 300))
-        continue
+  for (let round = 0; ; round += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        writeFileSync(brandedExecutable, contents)
+        return
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'EBUSY' && code !== 'EPERM') throw error
+        if (attempt < 2) await new Promise<void>(wake => setTimeout(wake, 300))
       }
-      // tasklist exits 0 when the image filter matches, so the check does not
-      // depend on the console code page.
-      const probe = spawnSync('tasklist', ['/FI', `IMAGENAME eq ${name}`], { encoding: 'utf8' })
-      if (probe.status === 0) {
-        throw new Error(`desktop dev: an earlier ${name} instance is still running and locks the dev executable — close it (or run: taskkill /F /IM ${name}) and start again`)
-      }
-      throw new Error(`desktop dev: ${name} stayed locked after retries — another process such as antivirus holds it; retry shortly`)
     }
+    if (round > 0) {
+      throw new Error(`desktop dev: ${name} stayed locked after terminating the stale dev instance — another process such as antivirus holds it; retry shortly`)
+    }
+    spawnSync('taskkill', ['/F', '/IM', name], { stdio: 'ignore' })
+    await new Promise<void>(wake => setTimeout(wake, 500))
   }
 }

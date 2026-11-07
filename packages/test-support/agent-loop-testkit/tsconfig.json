@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
@@ -34,6 +35,18 @@
     },
     {
       "path": "../../session/session-projection"
+    },
+    {
+      "path": "../../session/working-directory"
+    },
+    {
+      "path": "../../fs/fs-local"
+    },
+    {
+      "path": "../../core/tool-executor-native"
+    },
+    {
+      "path": "../../core/tool-executor-ptc"
     }
   ]
 }

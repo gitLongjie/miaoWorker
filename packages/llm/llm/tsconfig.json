@@ -2,7 +2,8 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "composite": true
   },
   "include": [
     "src"
@@ -15,13 +16,13 @@
       "path": "../../../vendor/cordis"
     },
     {
+      "path": "../../../vendor/schemastery"
+    },
+    {
       "path": "../../util/brand"
     },
     {
       "path": "../../attachment/attachment"
-    },
-    {
-      "path": "../../runtime-diagnostics/invariants"
     },
     {
       "path": "../../util/timeout"
@@ -31,6 +32,9 @@
     },
     {
       "path": "../../util/values"
+    },
+    {
+      "path": "../../util/package-manifest"
     },
     {
       "path": "../../typert/protocol"
