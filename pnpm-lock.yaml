@@ -1603,6 +1603,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../vendor/schemastery
         version: link:../../vendor/schemastery
+      '@xmanrui/dsh-im':
+        specifier: file:../../dsh-im/dsh-im-main
+        version: link:../../dsh-im/dsh-im-main
       electron-updater:
         specifier: ^6.8.9
         version: 6.8.9(supports-color@9.4.0)
