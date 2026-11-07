@@ -75,9 +75,9 @@ if (process.platform === 'win32') app.setAppUserModelId(resolveAppUserModelId())
 // The userData directory stays on the ASCII file-system id, not the localized
 // display name `setName` installs: users and support scripts navigate
 // %APPDATA% (and macOS Application Support) by the product's file-system id
-// (DeepWorker), and the display name belongs to the window and tray, not the
+// (miaoWorker), and the display name belongs to the window and tray, not the
 // disk layout.
-app.setPath('userData', join(app.getPath('appData'), 'DeepWorker'))
+app.setPath('userData', join(app.getPath('appData'), 'miaoWorker'))
 // The smoke harness must never contend with a real instance's lock: the
 // single-instance lock is scoped to userData, so the harness points it at its
 // own directory. Must run before installSingleInstanceLock() below.

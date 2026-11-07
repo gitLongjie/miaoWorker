@@ -348,6 +348,7 @@
     "@deepseek-ai/libreoffice-kit": "^0.1.5",
     "@deepseek-ai/node-addon-system": "workspace:~",
     "@deepseek-ai/schemastery": "workspace:~",
+    "@xmanrui/dsh-im": "file:../../dsh-im/dsh-im-main",
     "electron-updater": "^6.8.9",
     "semver": "^7.8.5",
     "ws": "^8.21.3"
