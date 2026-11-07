@@ -19,6 +19,8 @@ coverage/
 oxlint-contract-*.ts
 .humanize/
 tmp/
+.tmp/
+.zcode/
 .claude/commands/
 .claude/launch.json
 .claude/settings.json
