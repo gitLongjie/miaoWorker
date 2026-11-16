@@ -278,6 +278,8 @@ describe('desktop builder identity', () => {
       '@deepseek-ai/dsh-session-query': 'workspace:*',
       '@deepseek-ai/dsh-settings': 'workspace:*',
       '@xmanrui/dsh-im': 'file:../../dsh-im/dsh-im-main',
+      '@xmanrui/dsh-business-entry': 'file:../../business-entry',
+      'dsh-video-downloader': 'file:../../dsh-video-downloader',
     })
   })
 })

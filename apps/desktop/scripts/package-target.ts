@@ -525,6 +525,10 @@ export async function packageTarget(
   await execute(['run', 'prepare:dsh', ...(signPrimaryRuntime ? ['--defer-runtime-smoke'] : [])], downloadEnv)
   if (signPrimaryRuntime) await execute(['run', 'sign:primary-runtime', '--dsh'], electronBuilderEnv)
   if (invocation.prepareOnly) return
+  // OEM file: plugins (IM, business-entry, video-downloader) are outside the
+  // workspace artifact graph; build their runtime files before electron-builder
+  // copies the package trees into app.asar.
+  await execute(['exec', 'node', 'scripts/prepare-oem-plugins.mjs'], targetEnv)
   const buildMacArtifact = (artifact: DesktopPrepackagedArtifact) => execute(
     desktopElectronBuilderArguments(target, false, artifact), artifact.format === 'zip'
       ? { ...electronBuilderEnv, ELECTRON_BUILDER_COMPRESSION_LEVEL: String(mac?.zipCompressionLevel) }

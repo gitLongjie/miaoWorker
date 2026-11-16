@@ -1603,6 +1603,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../vendor/schemastery
         version: link:../../vendor/schemastery
+      '@xmanrui/dsh-business-entry':
+        specifier: file:../../business-entry
+        version: file:business-entry(@deepseek-ai/cordis@vendor+cordis)
       '@xmanrui/dsh-im':
         specifier: file:../../dsh-im/dsh-im-main
         version: link:../../dsh-im/dsh-im-main
@@ -23983,6 +23986,12 @@ packages:
       link-preview-js:
         optional: true
 
+  '@xmanrui/dsh-business-entry@file:business-entry':
+    resolution: {directory: business-entry, type: directory}
+    engines: {node: '>=22.19'}
+    peerDependencies:
+      '@deepseek-ai/cordis': ^4.0.0
+
   '@xmldom/xmldom@0.8.15':
     resolution: {integrity: sha512-/5NV/vDALVFDXgLmfsy9TRCBlKwO2LNBFzpzvb9iIj+jR+eSc6DLYYvVOdivT/jm7MtU6TebYuRmzEOI7w40UA==}
     engines: {node: '>=10.0.0'}
@@ -31918,6 +31927,10 @@ snapshots:
       - bufferutil
       - supports-color
       - utf-8-validate
+
+  '@xmanrui/dsh-business-entry@file:business-entry(@deepseek-ai/cordis@vendor+cordis)':
+    dependencies:
+      '@deepseek-ai/cordis': link:vendor/cordis
 
   '@xmldom/xmldom@0.8.15': {}
 

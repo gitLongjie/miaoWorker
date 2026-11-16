@@ -8,10 +8,10 @@
  * missing feature or an `agent-preset/invalid` refusal when that preset mounts.
  *
  * Exemptions: rows disabled in a patch (the shipped disabled `ui-schedule`
- * pair) and the staged non-workspace plugins (`@xmanrui/dsh-im`,
- * `business-entry`, `dsh-video-downloader`) that `apps/desktop/scripts/deploy-app.mjs`
- * copies beside the bundle instead of through node_modules. Preset rows with
- * `disabled: !!js` stay required: the expression can enable them at runtime.
+ * pair) and the OEM file: plugins (`@xmanrui/dsh-im`,
+ * `@xmanrui/dsh-business-entry`, `dsh-video-downloader`) that ship through the
+ * Desktop dependency closure and are also staged by `deploy-app.mjs`. Preset
+ * rows with `disabled: !!js` stay required: the expression can enable them at runtime.
  * @module scripts/verify-desktop-dependencies
  */
 
@@ -35,7 +35,11 @@ const AGENT_PRESETS_ROOT = 'apps/desktop/config/agent-presets'
  * Packages staged by deploy-app.mjs beside the bundle instead of shipping
  * through node_modules, so the dependency closure does not carry them.
  */
-const STAGED_EXEMPTIONS = new Set<string>(['@xmanrui/dsh-im', 'business-entry', 'dsh-video-downloader'])
+const STAGED_EXEMPTIONS = new Set<string>([
+  '@xmanrui/dsh-im',
+  '@xmanrui/dsh-business-entry',
+  'dsh-video-downloader',
+])
 
 /** Rows listing `disabled: true` within this many lines after `- name:` never load. */
 const DISABLED_SCAN_LINES = 4
