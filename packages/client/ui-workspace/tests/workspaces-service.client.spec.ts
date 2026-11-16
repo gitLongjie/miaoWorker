@@ -276,6 +276,8 @@ interface BenchOptions {
   readonly workspaces?: WorkspaceSnapshot
   readonly sessions?: SessionListState
   readonly configureSessions?: (sessions: FakeSessions) => void
+  /** Cold-start bind policy; omit for the historical `blank` default. */
+  readonly startupBind?: 'blank' | 'none'
 }
 
 function bench(options: BenchOptions = {}) {
@@ -309,6 +311,7 @@ function bench(options: BenchOptions = {}) {
     sessions,
     view.actions,
     notify,
+    options.startupBind ?? 'blank',
   )
   return { ctx, directoryPicker, sessions, uiWorkspace, workspaces, layout, selectPanel, view, notify, requestDraftInitialization }
 }
@@ -338,6 +341,54 @@ describe('UiWorkspaceService', () => {
     expect(b.workspaces.initializeDefault).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal))
     expect(b.sessions.create).toHaveBeenCalledWith({ workspaceId: wid('default') })
     expect(b.notify).not.toHaveBeenCalled()
+  })
+
+  it('with startupBind none prepares a default Workspace without binding a blank Session', async () => {
+    const b = bench({
+      startupBind: 'none',
+      configureWorkspaces: (workspaces) => {
+        workspaces.initializeDefault.mockImplementation(async () => {
+          const item = workspace('default')
+          workspaces.list.set(workspaceState([item]))
+          return item
+        })
+      },
+    })
+    b.sessions.list.set(sessionState())
+    b.workspaces.list.set(workspaceState())
+    await vi.waitFor(() => {
+      expect(b.workspaces.initializeDefault).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal))
+    })
+    await setImmediate()
+    expect(b.sessions.create).not.toHaveBeenCalled()
+    expect(b.sessions.retain).not.toHaveBeenCalled()
+    expect(b.notify).not.toHaveBeenCalled()
+  })
+
+  it('with startupBind none still restores a saved non-blank Session', async () => {
+    persistSelection({ sessionId: sid('saved') })
+    const saved = summary('saved', { blank: false })
+    const b = bench({
+      startupBind: 'none',
+      workspaces: workspaceState([workspace('w', [saved.id])]),
+      sessions: sessionState([saved]),
+    })
+    await vi.waitFor(() => {
+      expect(b.sessions.retain).toHaveBeenCalledExactlyOnceWith(sid('saved'), { source: 'mainView' })
+    })
+    expect(b.sessions.create).not.toHaveBeenCalled()
+  })
+
+  it('setStartupBind none before catalogs settle skips blank connectWorkspace', async () => {
+    const b = bench({
+      workspaces: workspaceState([workspace('w')]),
+      sessions: sessionState([], 'pending'),
+    })
+    b.uiWorkspace.setStartupBind('none')
+    b.sessions.list.set(sessionState())
+    await setImmediate()
+    expect(b.sessions.create).not.toHaveBeenCalled()
+    expect(b.sessions.retain).not.toHaveBeenCalled()
   })
 
   it('stands the conversation-area browser pages down when a Session opens, including the current one', () => {

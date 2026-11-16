@@ -20,6 +20,7 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const repoRoot = resolve(root, '../..')
 const dshImRoot = resolve(repoRoot, 'dsh-im', 'dsh-im-main')
 const businessEntryRoot = resolve(repoRoot, 'business-entry')
+const videoDownloaderRoot = resolve(repoRoot, 'dsh-video-downloader')
 const { productName, updateUrl, knowledgeBase, gatewayProviderName, helpDocsUrl } = readDesktopOemConfig(repoRoot)
 // pnpm 11's deps-status check aborts in a non-interactive shell unless CI is
 // set; stamp it so every pnpm invocation here inherits it.
@@ -110,6 +111,13 @@ cpSync(businessEntryRoot, businessEntryStage, {
   recursive: true,
   filter: (source) => source === businessEntryRoot
     || /(?:[\\/](?:lib|package\.json|cordis\.patch\.yml))(?:$|[\\/])/.test(source),
+})
+// Stage the media downloader (pure ESM, no build) for electron-builder.
+const videoDownloaderStage = resolve(root, 'dist', 'dsh-video-downloader-package')
+cpSync(videoDownloaderRoot, videoDownloaderStage, {
+  recursive: true,
+  filter: (source) => source === videoDownloaderRoot
+    || /(?:[\\/](?:src|package\.json|cordis\.patch\.yml))(?:$|[\\/])/.test(source),
 })
 // 3. Package from apps/desktop itself. electron-builder follows the pnpm
 // workspace symlinks in node_modules, excludes devDependencies by the manifest,

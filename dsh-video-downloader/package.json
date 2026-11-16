@@ -1,0 +1,21 @@
+{
+  "name": "dsh-video-downloader",
+  "version": "0.1.0",
+  "description": "Media downloader for DeepSeek Harness. Detect and download video/audio from Bilibili, YouTube, Douyin, Xiaohongshu.",
+  "type": "module",
+  "main": "src/index.js",
+  "files": ["src", "cordis.patch.yml", "README.md", "LICENSE"],
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "video", "downloader", "media", "bilibili", "youtube", "douyin", "xiaohongshu"],
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "^0.0.1-rc.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

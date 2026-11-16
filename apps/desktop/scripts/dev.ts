@@ -25,6 +25,10 @@ const electronEnvironment = {
   // flag is what lets the updater tell the two apart (development never
   // checks the OEM feed).
   DSH_DESKTOP_DEV: '1',
+  // Windows binds the taskbar icon and toast app name to the shortcut that
+  // carries this process's AppUserModelId. The id includes this checkout
+  // root so another clone cannot use the same id.
+  DSH_DESKTOP_DEV_ROOT: repoRoot,
 }
 
 function run(cmd: string, cmdArgs: readonly string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): void {
@@ -72,6 +76,17 @@ function refreshLocalBusinessEntryPlugin(): void {
   copyFileSync(resolve(source, 'package.json'), resolve(patchTarget, 'package.json'))
 }
 
+/** Refresh the checked-out media downloader into the active Web profile (zero build). */
+function refreshLocalVideoDownloader(): void {
+  const source = resolve(root, '..', '..', 'dsh-video-downloader')
+  const packageDir = resolve(process.env.DSH_HOME ?? `${process.env.USERPROFILE ?? ''}\\.dsh`, 'profiles', 'web', 'node_modules', 'dsh-video-downloader')
+  const srcTarget = resolve(packageDir, 'src')
+  mkdirSync(srcTarget, { recursive: true })
+  copyFileSync(resolve(source, 'src', 'index.js'), resolve(srcTarget, 'index.js'))
+  copyFileSync(resolve(source, 'cordis.patch.yml'), resolve(packageDir, 'cordis.patch.yml'))
+  copyFileSync(resolve(source, 'package.json'), resolve(packageDir, 'package.json'))
+}
+
 // The web dist must use a relative asset base so the app scheme can serve it;
 // build directly into apps/desktop/web to keep apps/web/dist (the served build)
 // untouched.
@@ -79,6 +94,7 @@ function refreshLocalBusinessEntryPlugin(): void {
 // old hashed chunks otherwise; stale assets linger and confuse diagnosis.
 refreshLocalImPlugin()
 refreshLocalBusinessEntryPlugin()
+refreshLocalVideoDownloader()
 // The Client-face tsdown bundles every plugin from its tsc emit under
 // lib/types, not its sources, so the emit must be refreshed for all client
 // packages before bundling: a stale emit ships the previous logic with no

@@ -3,11 +3,23 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write business-entry/README.md
 /xmanrui-dsh-business-entry:
-  en: 5bed23be3ea6575b
-  zh: 967776da6c681e2d
+  en: 0f6ff0d40716da95
+  zh: 427c5b451cfe54e6
+/xmanrui-dsh-business-entry/cold-start:
+  en: 964681c09f62777e
+  zh: fba7f17ffaf57d75
 /xmanrui-dsh-business-entry/task-launch:
-  en: 03fa5fb2d5fc4f5d
-  zh: 5fccaf8da33c0196
+  en: b8bb1171d6b52be7
+  zh: bf4656962796bb9d
+/xmanrui-dsh-business-entry/task-launch/today-s-topics-video-script:
+  en: ac2887e9a5634bbf
+  zh: 09809fe9c7200e87
+/xmanrui-dsh-business-entry/task-launch/daily-data-report:
+  en: 8f0b16899b2272fe
+  zh: f4778d5ef053d94f
+/xmanrui-dsh-business-entry/task-launch/video-download:
+  en: 753f425fb39edb80
+  zh: 090cad3bb85460a8
 /xmanrui-dsh-business-entry/install:
   en: 9dd717b588f5bcc7
   zh: e4442d78d40f844e
@@ -15,11 +27,11 @@
   en: b7ee305a8bcb7bf5
   zh: 43d5cbe0ec823f40
 /xmanrui-dsh-business-entry/test:
-  en: d66cc5e79f568cab
-  zh: d197d5d4b8a471bd
+  en: 36ce96d1286ac947
+  zh: 37b7eb72183eac87
 /xmanrui-dsh-business-entry/toggle:
-  en: 28361c660b96fd28
-  zh: bdd3f2f827be62cf
+  en: 937a345f5d850efd
+  zh: 19dbcca35d67964b
 /xmanrui-dsh-business-entry/file-layout:
   en: 5b4a4230b2e857bb
-  zh: e8fcab1a669bcfcc
+  zh: 17a8717df6c01c1f

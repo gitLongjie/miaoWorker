@@ -1,7 +1,7 @@
 {
   "name": "@xmanrui/dsh-business-entry",
   "version": "1.0.0",
-  "description": "Business-entry sidebar section plugin for DeepSeek Harness: the deployment's task entries as one collapsible group below the workspace region.",
+  "description": "Business workbench plugin for DeepSeek Harness: form-driven task home panel with Agent Sessions under the hood.",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.js",
@@ -24,19 +24,24 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-sidebar"
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ],
       "platform": "web"
     }
   },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node build.mjs && node --test tests/*.test.mjs",
+    "test": "node build.mjs && node --test tests/launch.test.mjs tests/video-routes.test.mjs",
     "check": "npm run test"
   },
   "engines": {
     "node": ">=22.19"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

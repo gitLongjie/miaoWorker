@@ -38,8 +38,13 @@ describe('desktop builder identity', () => {
     const appId = /^appId:\s*(\S+)\s*$/m.exec(config)?.[1]
     expect(DESKTOP_APP_USER_MODEL_ID).toBe(appId)
     expect(resolveAppUserModelId({})).toBe(appId)
-    expect(resolveAppUserModelId({ DSH_DESKTOP_DEV: '1' })).toBe(`${appId}.dev`)
-    expect(readFileSync(MAIN_ENTRY, 'utf8')).toContain('app.setAppUserModelId(resolveAppUserModelId())')
+    expect(() => resolveAppUserModelId({ DSH_DESKTOP_DEV: '1' })).toThrow(/checkout path/)
+    const harnessDev = resolveAppUserModelId({ DSH_DESKTOP_DEV: '1', DSH_DESKTOP_DEV_ROOT: 'E:/deepseek-harness' })
+    const otherDev = resolveAppUserModelId({ DSH_DESKTOP_DEV: '1', DSH_DESKTOP_DEV_ROOT: 'E:/miaoWorker' })
+    expect(harnessDev).not.toBe(otherDev)
+    expect(harnessDev).not.toBe(`${appId}.dev`)
+    expect(otherDev).not.toBe(`${appId}.dev`)
+    expect(readFileSync(MAIN_ENTRY, 'utf8')).toContain('app.setAppUserModelId(resolveAppUserModelId(process.env, app.getAppPath()))')
   })
 
   it('pins the application icon instead of Electron default artwork', () => {

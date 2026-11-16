@@ -1,3 +1,6 @@
+# Insert the business workbench plugin. Cold-start `startupBind: none` is set
+# from the client apply via `uiWorkspace.setStartupBind` (browser plugin Config
+# does not ride Host Loader rows).
 - insert:
     - id: xmanrui-dsh-business-entry
       name: '@xmanrui/dsh-business-entry'

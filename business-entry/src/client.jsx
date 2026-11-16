@@ -1,48 +1,28 @@
 /**
- * Business-entry plugin, browser half: one registration into the sidebar
- * shell's `sidebar.business` hole plus the `business` dictionaries. The
- * occupant is a menu over the deployment's task catalog, so it declares no
- * inject face of its own beyond the launch callback; its disclosure,
- * selection, and launch status ride the entry's declared store, which
- * outlives the shell unmounting the browsing region's wide content at
- * collapse.
- *
- * Clicking a row OPENS that task: the Session the entry already owns — found by
- * the entry label it was titled with — or, when it owns none yet, the target
- * Workspace's New Session (created or reused, the same navigation the sidebar's
- * New Session control takes) with the row's instruction sent as that session's
- * first prompt. So a row goes back to the conversation that task produced, and
- * only the first click starts one. Each instruction opens by asking for the
- * inputs it needs, because nothing has been supplied at click time.
- *
- * A modifier click (Ctrl/⌘/Alt) asks for a fresh run instead. That never
- * replaces or deletes the previous task Session: it stays in the workspace's
- * session list under the entry label.
+ * Business-entry plugin, browser half: the `business-workbench` main panel is
+ * the product home (forms → Agent Sessions), with a slim `sidebar.business`
+ * control that only opens that panel. Task history and launch status live in
+ * the declared store. Form submit composes a prompt and starts a Session
+ * without revealing Conversation; "查看会话" / Open session is the escape hatch.
  *
  * Hot-toggle: the Settings page carries a resident enable/disable switch for
- * the group (shell-owned, always visible). Toggling writes the home patch
- * (persisted) and fires a CustomEvent that the apply closure listens for to
- * dispose or re-create the sidebar.business slot registration immediately.
+ * the sidebar control (shell-owned). The workbench panellist home stays mounted.
  */
 import React from 'react'
 import { BUSINESS_ENTRIES } from './entries.js'
+import { composePrompt } from './forms.js'
 import { en, zh } from './locales.js'
 import { createBusinessEntryStore } from './stores.js'
 import { css, stylesheet } from './styles.js'
+import { WorkbenchPage } from './WorkbenchPage.jsx'
+
+/** Sidebar panellist id and keyed main-panel key. */
+export const PANEL_ID = 'business-workbench'
+const PANEL_ORDER = 10
 
 /* ------------------------------------------------------------------ */
 /*  Icons (inlined SVG to avoid depending on ui-primitives)           */
 /* ------------------------------------------------------------------ */
-
-function IconChevronDown({ size = 14, className }) {
-  return React.createElement('svg', {
-    width: size, height: size, viewBox: '0 0 14 14', fill: 'none',
-    xmlns: 'http://www.w3.org/2000/svg', className,
-  }, React.createElement('path', {
-    d: 'M3.5 5.25L7 8.75L10.5 5.25', stroke: 'currentColor',
-    strokeWidth: '1.2', strokeLinecap: 'round', strokeLinejoin: 'round',
-  }))
-}
 
 function IconListPen({ size = 16, className }) {
   return React.createElement('svg', {
@@ -55,45 +35,17 @@ function IconListPen({ size = 16, className }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  clsx helper (inlined to avoid external dependency)                */
+/*  Slim sidebar control → open workbench                             */
 /* ------------------------------------------------------------------ */
 
-function clsx(...args) {
-  let result = ''
-  for (const arg of args) {
-    if (!arg) continue
-    if (typeof arg === 'string') { result += (result ? ' ' : '') + arg; continue }
-    if (Array.isArray(arg)) { const inner = clsx(...arg); if (inner) result += (result ? ' ' : '') + inner; continue }
-    if (typeof arg === 'object') {
-      for (const key in arg) {
-        if (Object.prototype.hasOwnProperty.call(arg, key) && arg[key]) {
-          result += (result ? ' ' : '') + key
-        }
-      }
-    }
-  }
-  return result
-}
-
-/* ------------------------------------------------------------------ */
-/*  BusinessNav component                                             */
-/* ------------------------------------------------------------------ */
-
-function BusinessNav({ wide, expandSidebar, useStore, useHistory, actions, launch, openSession, t }) {
-  const expanded = useStore(s => s.expanded)
-  const selected = useStore(s => s.selected)
-  const pending = useStore(s => s.pending)
-  const error = useStore(s => s.error)
-  const historyFor = useStore(s => s.historyFor)
-  const history = useHistory(s => s)
-
+function BusinessNav({ wide, expandSidebar, openWorkbench, t }) {
   if (!wide) {
     return React.createElement('div', { className: css.rail },
       React.createElement('button', {
         type: 'button',
         className: css.railButton,
-        'aria-label': t('section.business'),
-        onClick: () => { expandSidebar(); actions.setExpanded(true) },
+        'aria-label': t('nav.open'),
+        onClick: () => { expandSidebar(); openWorkbench() },
       }, React.createElement(IconListPen, { size: 18 })),
     )
   }
@@ -102,97 +54,11 @@ function BusinessNav({ wide, expandSidebar, useStore, useHistory, actions, launc
     React.createElement('button', {
       type: 'button',
       className: css.header,
-      'aria-expanded': expanded,
-      onClick: () => { actions.setExpanded(!expanded) },
+      onClick: () => { openWorkbench() },
+      title: t('item.hint'),
     },
       React.createElement(IconListPen, { size: 14, className: css.headerIcon }),
-      React.createElement('span', { className: css.headerLabel }, t('section.business')),
-      React.createElement(IconChevronDown, {
-        className: clsx(css.chevron, !expanded && css.chevronCollapsed),
-      }),
-    ),
-    expanded && React.createElement('ul', { className: css.items },
-      BUSINESS_ENTRIES.map(entry => {
-        const busy = pending === entry.id
-        const past = history.entries[entry.id] ?? []
-        const open = historyFor === entry.id
-        return React.createElement('li', { key: entry.id },
-          React.createElement('div', { className: css.row },
-            React.createElement('button', {
-              type: 'button',
-              className: clsx(css.item, selected === entry.id && css.itemActive, busy && css.itemBusy),
-              'aria-current': selected === entry.id ? 'true' : undefined,
-              'aria-busy': busy ? 'true' : undefined,
-              title: t('item.hint'),
-              // One task at a time: a second click while the first is still
-              // opening its Session would race the same blank placeholder.
-              disabled: pending !== undefined,
-              // A modifier click is the explicit "run this again" — the plain
-              // click returns to the task Session this entry already owns.
-              onClick: (event) => {
-                actions.select(entry.id)
-                launch(entry.id, { fresh: event?.ctrlKey === true || event?.metaKey === true || event?.altKey === true })
-              },
-            },
-              busy
-                ? React.createElement('span', { className: css.spinner, 'aria-hidden': 'true' })
-                : React.createElement('span', {
-                  className: css.dot,
-                  style: { background: entry.dot },
-                }),
-              t(entry.label),
-            ),
-            // Every run this entry ever started, one click away. The row itself
-            // opens the newest; this disclosure is how the earlier ones stay
-            // reachable instead of scrolling out of the workspace's list.
-            past.length > 0 && React.createElement('button', {
-              type: 'button',
-              className: css.historyToggle,
-              'aria-expanded': open,
-              'aria-label': t('item.history', { count: past.length }),
-              title: t('item.history', { count: past.length }),
-              onClick: () => { actions.toggleHistory(entry.id) },
-            }, React.createElement(IconChevronDown, {
-              size: 12,
-              className: clsx(css.chevron, !open && css.chevronCollapsed),
-            })),
-          ),
-          open && React.createElement('ul', { className: css.history },
-            React.createElement('li', null,
-              React.createElement('button', {
-                type: 'button',
-                className: clsx(css.historyItem, css.historyNew),
-                onClick: () => { launch(entry.id, { fresh: true }) },
-              }, t('history.new')),
-            ),
-            past.map(row => React.createElement('li', { key: row.sessionId },
-              React.createElement('button', {
-                type: 'button',
-                className: clsx(css.historyItem, row.sessionId === history.current && css.historyItemCurrent),
-                'aria-current': row.sessionId === history.current ? 'true' : undefined,
-                onClick: () => { openSession(row.sessionId) },
-              },
-                React.createElement('span', { className: css.historyTime }, formatSessionTime(row.updatedAt)),
-                row.running
-                  ? React.createElement('span', { className: css.historyRunning }, t('history.running'))
-                  : null,
-              ),
-            )),
-          ),
-        )
-      }),
-    ),
-    // The launch outcome is the only thing this group can fail at, and the
-    // row that failed is already highlighted — so the reason belongs here,
-    // under the list, dismissed by clicking it.
-    expanded && error !== undefined && React.createElement('div', {
-      className: css.note,
-      role: 'alert',
-      title: t('launch.dismiss'),
-      onClick: () => { actions.clearError() },
-    },
-      React.createElement('span', { className: css.noteText }, t('launch.failed')),
-      React.createElement('span', { className: css.noteDetail }, error),
+      React.createElement('span', { className: css.headerLabel }, t('nav.label')),
     ),
   )
 }
@@ -306,18 +172,6 @@ function deriveTaskHistory(ctx) {
 }
 
 /**
- * Render one Session's last activity as a compact, locale-neutral stamp. The
- * list orders runs, so what a row needs is when it was, not a translated date.
- * @param updatedAt - epoch milliseconds of the Session's last activity.
- * @returns `MM-DD HH:mm`.
- */
-function formatSessionTime(updatedAt) {
-  const at = new Date(updatedAt)
-  const pad = value => String(value).padStart(2, '0')
-  return `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`
-}
-
-/**
  * Send one entry's instruction as the first prompt of a Session, then name
  * that Session after the entry so the list says which task produced it — and
  * so {@link taskSessionsOf} finds it again.
@@ -354,18 +208,25 @@ async function startEntryTask(ctx, promptText, title) {
   if (workspaceId !== undefined) {
     let started
     let sessionId
+    // Preserve the workbench panel: bind the Session without revealing chat.
     await ctx.uiWorkspace.openWorkspace(workspaceId, (adopted) => {
       sessionId = adopted
       started = deliverPrompt(ctx, adopted, promptText, title)
-    })
+    }, { panel: 'preserve' })
     // Absent only when a later navigation superseded this one before it opened.
     if (started !== undefined) await started
     return sessionId
   }
-  // No Workspace to attach to: create the Session directly and open it.
+  // No Workspace to attach to: create the Session, retain briefly for prompt,
+  // and leave Conversation unrevealed.
   const sessionId = await ctx.sessions.create({})
-  ctx.uiWorkspace.openSession(sessionId)
-  await deliverPrompt(ctx, sessionId, promptText, title)
+  if (typeof ctx.sessions.using === 'function') {
+    await ctx.sessions.using(sessionId, { source: 'workspaceOperation' }, async () => {
+      await deliverPrompt(ctx, sessionId, promptText, title)
+    })
+  } else {
+    await deliverPrompt(ctx, sessionId, promptText, title)
+  }
   return sessionId
 }
 
@@ -381,33 +242,26 @@ function describeReason(reason) {
 }
 
 /**
- * Open one entry: the task Session it already owns, or a new one when it has
- * none yet.
- *
- * Going back to the owned Session is the default because a business entry is a
- * standing task, not a one-shot command — the conversation, its produced
- * artifacts and its history are what the row is for. A fresh run is an
- * explicit choice (modifier-click), which never deletes or replaces the
- * previous Session: the earlier conversation stays in the workspace's session
- * list under its own title.
+ * Start one entry from the workbench form: compose the instruction from field
+ * values and open a Session without revealing Conversation. `fresh` always
+ * starts a new run; otherwise the first submit for an entry that already owns
+ * a Session still starts a new run from the form (resume is "Open session").
  * @param ctx - the plugin context.
- * @param id - the entry id the row reported.
+ * @param id - the entry id.
  * @param actions - the declared store's baked write set.
- * @param options - `fresh` forces a new task Session for this click.
+ * @param values - form field map.
+ * @param options - `fresh` is accepted for symmetry with older callers.
  */
-async function launchEntry(ctx, id, actions, options) {
+async function launchFormEntry(ctx, id, actions, values, options) {
   const entry = BUSINESS_ENTRIES.find(candidate => candidate.id === id)
-  if (entry === undefined) return
+  if (entry === undefined || entry.kind === 'direct') return
   const t = ctx.locale.bind('business')
   actions.beginLaunch(id)
   try {
-    const owned = options?.fresh === true ? undefined : taskSessionsOf(ctx, id)[0]
-    if (owned !== undefined) {
-      ctx.uiWorkspace.openSession(owned.sessionId)
-      actions.endLaunch()
-      return
-    }
-    await startEntryTask(ctx, t(entry.prompt), t(entry.label))
+    const promptText = composePrompt(t(entry.prompt), values ?? {}, t('field.empty'))
+    // Form submit always creates a run; opening an existing run is a separate control.
+    void options
+    await startEntryTask(ctx, promptText, t(entry.label))
     actions.endLaunch()
   } catch (reason) {
     actions.failLaunch(describeReason(reason))
@@ -420,7 +274,7 @@ async function launchEntry(ctx, id, actions, options) {
 
 const NS = 'business'
 
-export const inject = ['slots', 'locale', 'workspaces', 'sessions', 'uiWorkspace']
+export const inject = ['slots', 'locale', 'workspaces', 'sessions', 'uiWorkspace', 'layout']
 
 export function apply(ctx) {
   // Inject stylesheets once.
@@ -435,15 +289,19 @@ export function apply(ctx) {
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-business-entry: dictionaries')
 
+  // Cold start: do not bind a blank Conversation; this panel owns the home.
+  ctx.uiWorkspace.setStartupBind('none')
+
   // Resolve defineStore from the client-store module through the module table.
   const clientStore = require('@deepseek-ai/dsh-client-store')
   const defineStore = clientStore.defineStore
 
+  // One viewing-store instance shared by the workbench page and slim sidebar.
+  const viewHandle = createBusinessEntryStore(defineStore)
+  const viewInstance = viewHandle.create()
+  const viewStore = { ...viewHandle, create: () => viewInstance }
+
   // --- Published task history ---
-  // Which Session is open plus every entry's own runs, derived from the two
-  // authoritative lists and republished on every change to either. One source
-  // for the whole group: the rows' disclosures and the resume target read the
-  // same snapshot, so they cannot disagree about which run is the latest.
   const taskHistory = clientStore.createSnapshotStore(deriveTaskHistory(ctx))
   ctx.effect(() => {
     const publish = () => { taskHistory.set(deriveTaskHistory(ctx)) }
@@ -456,25 +314,144 @@ export function apply(ctx) {
     }
   }, 'dsh-business-entry: task history')
 
-  // --- Hot-toggleable sidebar.business slot ---
-  // Holds the current inject disposer (which owns the register disposer).
+  // Daily-report data sources (browser-local, reused across report runs).
+  const dataSources = clientStore.createSnapshotStore(
+    { sources: [] },
+    { persist: { name: 'dsh.business.data-sources.v1' } },
+  )
+  const dataSourceActions = {
+    add: (source) => {
+      const snap = dataSources.getSnapshot()
+      dataSources.set({ sources: [...snap.sources, source] })
+    },
+    update: (source) => {
+      const snap = dataSources.getSnapshot()
+      dataSources.set({
+        sources: snap.sources.map(row => (row.id === source.id ? source : row)),
+      })
+    },
+    remove: (id) => {
+      const snap = dataSources.getSnapshot()
+      dataSources.set({ sources: snap.sources.filter(row => row.id !== id) })
+    },
+  }
+
+  const openWorkbench = () => {
+    try { ctx.layout.selectPanel(PANEL_ID) }
+    catch (_error) { /* panel not registered yet */ }
+  }
+
+  const navLabel = () => {
+    const dictionary = ctx.locale.getSnapshot().active === 'en' ? en : zh
+    return dictionary['nav.label']
+  }
+
+  // Main panel + panellist (product home).
+  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register(
+    {
+      name: 'sidebar.panellist',
+      id: PANEL_ID,
+      order: PANEL_ORDER,
+      label: navLabel,
+      locale: NS,
+    },
+    ({ size }) => React.createElement(IconListPen, { size }),
+  ))
+
+  ctx.slots.inject('main', () => ctx.slots.register(
+    {
+      name: 'main',
+      key: PANEL_ID,
+      locale: NS,
+      store: viewStore,
+      inject: (actions) => ({
+        setActiveEntryId: (id) => { actions.select(id) },
+        clearError: () => { actions.clearError() },
+        launchForm: (id, values, options) => {
+          void launchFormEntry(ctx, id, actions, values, options)
+        },
+        openSession: (sessionId) => { ctx.uiWorkspace.openSession(sessionId) },
+        dataSourceActions,
+        hooks: { history: taskHistory, dataSources },
+      }),
+    },
+    WorkbenchPage,
+  ))
+
+  // Cold-start home only: select the workbench once catalogs are ready while
+  // Conversation is empty (no mainView Session). Never re-home after Open
+  // session reveals Conversation — that path calls selectPanel(null) and used
+  // to bounce back when maybeHome still thought "no current Session".
+  ctx.effect(() => {
+    let done = false
+    let offSessions = () => {}
+    let offWorkspaces = () => {}
+    let offPanel = () => {}
+    const finish = () => {
+      if (done) return
+      done = true
+      offSessions()
+      offWorkspaces()
+      offPanel()
+    }
+    /** @param sessions - live Session list snapshot. */
+    const mainViewRow = (sessions) => {
+      for (const id of sessions.ids) {
+        const row = sessions.byId[id]
+        if (row !== undefined && (row.retainedBy?.mainView ?? 0) > 0) return row
+      }
+      return undefined
+    }
+    const maybeHome = () => {
+      if (done) return
+      const sessions = ctx.sessions.list.getSnapshot()
+      const workspaces = ctx.workspaces.list.getSnapshot()
+      if (sessions.phase !== 'ready' || workspaces.phase !== 'ready') return
+      // Another global panel already owns the center (including this workbench).
+      if (ctx.layout.panelInfo.getSnapshot().activePanelId !== null) {
+        finish()
+        return
+      }
+      // A main Session is bound (task launch with preserve, Open session, or
+      // restore). Do not steal Conversation — production has no sessions.current.
+      if (mainViewRow(sessions) !== undefined) {
+        finish()
+        return
+      }
+      try {
+        ctx.layout.selectPanel(PANEL_ID)
+        finish()
+      } catch (_error) {
+        // Main registration may still be pending; retry on the next catalog tick.
+      }
+    }
+    offSessions = ctx.sessions.list.subscribe(maybeHome)
+    offWorkspaces = ctx.workspaces.list.subscribe(maybeHome)
+    // Open session reveals with null; ignore that so cold-start home cannot snap back.
+    offPanel = ctx.layout.onPanelSelection((panelId) => {
+      if (panelId === null) return
+      maybeHome()
+    })
+    maybeHome()
+    return () => {
+      offSessions()
+      offWorkspaces()
+      offPanel()
+    }
+  }, 'dsh-business-entry: home panel')
+
+  // --- Hot-toggleable slim sidebar.business control ---
   let sidebarDisposer = null
 
   function registerSidebar() {
-    if (sidebarDisposer) return // already registered
+    if (sidebarDisposer) return
     sidebarDisposer = ctx.slots.inject('sidebar.business', () => ctx.slots.register(
       {
         name: 'sidebar.business',
-        store: createBusinessEntryStore(defineStore),
+        store: viewStore,
         locale: NS,
-        // The launcher closes over the registration's own store actions, so a
-        // refused launch reports on the row that asked for it. `history` is the
-        // registrant-private reactive fact: it reaches the component as the
-        // bound `useHistory` selector hook, never as a source.
-        inject: (actions) => ({
-          launch: (id, options) => { void launchEntry(ctx, id, actions, options) },
-          openSession: (sessionId) => { ctx.uiWorkspace.openSession(sessionId) },
-          hooks: { history: taskHistory },
+        inject: () => ({
+          openWorkbench,
         }),
       },
       BusinessNav,
@@ -488,21 +465,17 @@ export function apply(ctx) {
     }
   }
 
-  // Check initial enabled state via IPC, then register or skip.
   const ipc = typeof window !== 'undefined' ? window.__DSH_IPC__ : undefined
   if (ipc) {
     ipc.invoke('dsh:plugin:isEnabled', PLUGIN_ID).then(enabled => {
       if (enabled) registerSidebar()
     }).catch(() => {
-      // IPC failure (e.g. web mode) → default enabled.
       registerSidebar()
     })
   } else {
-    // No IPC (pure web) → always enabled.
     registerSidebar()
   }
 
-  // Listen for hot-toggle events from the resident Settings toggle.
   function onToggle(event) {
     if (event.detail?.enabled) {
       registerSidebar()
@@ -514,7 +487,6 @@ export function apply(ctx) {
     window.addEventListener(TOGGLE_EVENT, onToggle)
   }
 
-  // Cleanup on plugin dispose: remove sidebar slot and event listener.
   ctx.effect(() => {
     return () => {
       unregisterSidebar()

@@ -36,6 +36,14 @@ export interface StartSessionOptions extends DraftInitializationOptions {
   readonly agentPreset?: string
 }
 
+/**
+ * Cold-start main-Session policy after Workspace and Session catalogs are ready.
+ * `blank` creates or reuses a Workspace blank and binds it (historical default).
+ * `none` leaves main unbound when there is no non-blank Session to restore, so a
+ * deployment home panel can own the center without a synthetic Conversation.
+ */
+export type StartupBind = 'blank' | 'none'
+
 /** Workspace archive and directory operations consumed by Client UI domains. */
 export interface UiWorkspace {
   /**
@@ -51,7 +59,9 @@ export interface UiWorkspace {
    * @param workspaceId - target Workspace.
    * @param beforeOpen - optional synchronous preparation for the selected Session,
    * skipped after supersession; a throw aborts the open and releases the retained reference.
-   * @param options - choices for the Session the connection creates or reuses.
+   * @param options - choices for the Session the connection creates or reuses, and
+   * whether to reveal Conversation (`reveal`, default) or keep the current main panel
+   * (`preserve`) after the Session is bound.
    * @returns completion; a superseded request may create a Session but does not open it.
    * @throws on failure; a refused creation is also shown through the Workspace
    * notice unless a later navigation or disposal superseded the request.
@@ -59,8 +69,14 @@ export interface UiWorkspace {
   openWorkspace(
     workspaceId: WorkspaceId,
     beforeOpen?: (sessionId: SessionId) => void,
-    options?: Pick<StartSessionOptions, 'agentPreset'>,
+    options?: Pick<StartSessionOptions, 'agentPreset'> & { readonly panel?: 'reveal' | 'preserve' },
   ): Promise<void>
+  /**
+   * Set the cold-start Session bind policy. Call before both catalogs become ready
+   * so the first restoration observes it; later calls do not undo a bind already done.
+   * @param mode - `blank` (default) or `none`.
+   */
+  setStartupBind(mode: StartupBind): void
   /**
    * Fork a Session without changing the current selection.
    * @param sessionId - source Session.
@@ -198,6 +214,9 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   /** The composition step a binding registered for adopted placeholders. */
   private placeholderAdoption: ((sessionId: SessionId) => void | Promise<void>) | undefined
 
+  /** Cold-start bind policy; mutable until the first restoration settles. */
+  private startupBind: StartupBind
+
   /**
    * @param ctx - Client root Context.
    * @param directoryPicker - the directory-picking Remote namespace.
@@ -205,6 +224,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
    * @param sessions - pure Session Controller.
    * @param view - the browser's viewing-store write set (one instance shared with its registration).
    * @param notify - show one notice through the Workspace notice channel.
+   * @param startupBind - cold-start Session bind policy (`blank` when omitted).
    */
   constructor(
     ctx: Context,
@@ -213,8 +233,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     private readonly sessions: ISessions,
     private readonly view: Pick<WorkspaceViewStoreActions, 'pinSessionOrder'>,
     private readonly notify: (toast: RowToast) => void,
+    startupBind: StartupBind = 'blank',
   ) {
     super(ctx, 'uiWorkspace')
+    this.startupBind = startupBind
     ctx.effect(() => {
       const stop = this.watchNavigation()
       return () => {
@@ -225,6 +247,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         reference?.release()
       }
     }, 'ui-workspace: Workspace navigation policy')
+  }
+
+  setStartupBind(mode: StartupBind): void {
+    this.startupBind = mode
   }
 
   connectWorkspace(workspaceId: WorkspaceId, options: Pick<StartSessionOptions, 'agentPreset'> = {}): Promise<SessionId> {
@@ -347,15 +373,17 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   openWorkspace(
     workspaceId: WorkspaceId,
     beforeOpen?: (sessionId: SessionId) => void,
-    options: Pick<StartSessionOptions, 'agentPreset'> = {},
+    options: Pick<StartSessionOptions, 'agentPreset'> & { readonly panel?: 'reveal' | 'preserve' } = {},
   ): Promise<void> {
-    return this.openWorkspaceSession(workspaceId, beforeOpen, options)
+    const { panel = 'reveal', ...reuse } = options
+    return this.openWorkspaceSession(workspaceId, beforeOpen, reuse, panel)
   }
 
   private async openWorkspaceSession(
     workspaceId: WorkspaceId,
     beforeOpen: ((sessionId: SessionId) => void) | undefined,
     reuse: Pick<StartSessionOptions, 'agentPreset'>,
+    panel: 'reveal' | 'preserve',
   ): Promise<void> {
     const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
     let sessionId: SessionId
@@ -368,7 +396,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       throw error
     }
     if (navigation.aborted) return
-    this.replaceMain(sessionId, navigation, 'reveal', beforeOpen)
+    this.replaceMain(sessionId, navigation, panel, beforeOpen)
   }
 
   async forkSession(
@@ -527,6 +555,14 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
     const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
     this.restorationNavigation = navigation
+    if (this.startupBind === 'none') {
+      // Leave main unbound so a deployment home panel can own the center.
+      // Still prepare a default Workspace when the install has none.
+      if (workspaces.items.length === 0 && sessions.ids.length === 0) {
+        await this.initializeDefaultWorkspace(navigation)
+      }
+      return
+    }
     let sessionId: SessionId | undefined
     if (summary !== undefined && workspace !== undefined && summary.cwd === workspace.path
       && !workspaces.archivedSessionIds.includes(summary.id)) {

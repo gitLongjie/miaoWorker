@@ -56,7 +56,17 @@ ${bundled}
 async function buildHost() {
   const outPath = resolve(root, 'lib/index.js')
   await mkdir(dirname(outPath), { recursive: true })
-  await writeFile(outPath, 'export function apply() {}\n', 'utf8')
+  await build({
+    entryPoints: [resolve(root, 'src/index.js')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: ['node22'],
+    outfile: outPath,
+    // Resolved at Host runtime from the profile / asar node_modules.
+    external: ['dsh-video-downloader'],
+    legalComments: 'none',
+  })
   console.log(`Wrote ${outPath}`)
 }
 

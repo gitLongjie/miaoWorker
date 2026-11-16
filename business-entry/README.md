@@ -2,21 +2,32 @@
 
 English | [中文](README.zh.md)
 
-The sidebar business-entry group plugin for DeepSeek Harness: it renders the deployment's own task entries (daily report, topics, briefings, and more) as one collapsible group below the workspace region. A row is not a bookmark — clicking it runs that task in a new Agent session.
+The business workbench plugin for DeepSeek Harness: a chat-free home panel (`business-workbench`) where each deployment task (daily report, topics, briefings, and more) is started from a form. Submit composes an instruction and runs it in an Agent Session without revealing Conversation; run cards stay on the workbench, and **Open session** is the escape hatch into chat.
+
+## Cold start
+
+On apply the plugin calls `uiWorkspace.setStartupBind('none')` so cold start does not bind a blank Conversation, then selects `business-workbench` once Workspace and Session catalogs are ready and no non-blank Session is already open. Reloading with a saved non-blank Session still restores Conversation.
 
 ## Task launch
 
-Each row is a standing task with one conversation:
+1. Pick a task card and fill the required fields (locale-owned labels next to the prompt templates in `src/locales.js`).
+2. **Start task** opens the target Workspace’s New Session (created or reused) with `panel: 'preserve'`, sends the composed instruction as the first user message, and titles the Session with the entry label so later runs can be listed.
+3. The workbench stays visible. Past runs for that entry appear as cards; **Open session** calls `openSession` and reveals Conversation.
+4. **Start a new run** always creates another Session under the same entry label; earlier runs stay in the list.
 
-1. Clicking a row opens the Session that entry already owns — the most recently updated non-archived Session titled with the entry's label, which is the title this plugin writes when it starts the task. Going back to a task therefore returns to its work, its artifacts, and its history.
-2. The first click for an entry has no such Session yet: it resolves the target workspace — the open Session's workspace, else the most recently active one — and opens its New Session (created or reused, the same navigation as the sidebar's New Session control). With no workspace registered, it creates the Session directly.
-3. That Session receives the entry's instruction (`prompt.<id>` in `src/locales.js`, next to the row label and equally locale-owned) as its first user message, and is titled with the entry's label — which is what makes step 1 find it again.
+### Today’s Topics / Video script / One Draft, Many Formats
 
-Ctrl/⌘/Alt+click asks for a fresh run instead. It starts a new Session and never deletes, replaces, or renames the earlier one: every previous run stays in the workspace's session list under that entry's label, with its full conversation.
+**Target platforms** are curated multi-select chips (WeChat Official Account, Weibo, Xiaohongshu, Douyin, WeChat Channels, Bilibili) — not free text. Today’s Topics collects only platforms; beat and positioning are not asked. The instruction requires the agent to fetch each selected platform’s past-24-hour hotspots itself before proposing topics. One Draft, Many Formats collects a source draft plus platforms and rewrites only for the selected platforms.
 
-Every row also discloses its own runs: the count on the row opens the entry's past conversations, newest first, with the running one flagged and the one the workspace currently shows marked. Selecting any of them opens it, and the list's first item starts a fresh run — the same thing Ctrl/⌘/Alt+click does from the row. Nothing is ever deleted by a launch, so a previous run stays both in that list and in the workspace's session list.
+### Daily data report
 
-Every instruction opens by asking for the inputs it needs — data source, monitoring target, source material — because the click supplies nothing else. Rows stay disabled while a launch is in flight; a refused launch reports its own reason under the list, and clicking the notice dismisses it.
+The daily-report page keeps a browser-local **data source** catalog (`dsh.business.data-sources.v1`): add a named source (paste / file notes / connected system) once, then generate a report by picking period, platforms, and one or more existing sources. The form no longer asks for a free-text “数据来源” on every run.
+
+### Video download
+
+The **Video download** card is a direct Host path (`kind: 'direct'`): it does **not** start an Agent Session. The UI posts to `/api/business/video/analyze` and `/api/business/video/download` (registered by this plugin’s Host entry). Files are written under `$DSH_HOME/business-downloads`. Paste a **direct** media URL (mp4 / m3u8 / m4s / …); share-page links are not resolved in v1. Requires the sibling `dsh-video-downloader` Host bundle to be mounted (Desktop stages and optionally injects it).
+
+A slim `sidebar.business` control only opens the workbench panel. The settings toggle still shows or hides that control; the panellist home stays available.
 
 ## Install
 
@@ -35,34 +46,42 @@ After changing sources under `src/`, rebuild and restart the desktop app for the
 
 ```bash
 cd business-entry
-node build.mjs && node --test tests/launch.test.mjs
+node build.mjs && node --test tests/*.test.mjs
 ```
 
-`tests/launch.test.mjs` drives the built bundle through a fake module table and slot registry: it clicks a row and asserts the instruction that was sent, the session title, the no-workspace fallback, and the failure the group reports.
+`tests/launch.test.mjs` drives the built bundle through a fake module table and slot registry: it submits a form and asserts the composed instruction, `panel: 'preserve'`, no reveal on submit, and Open session revealing chat. `tests/video-routes.test.mjs` covers the Host download path sandbox and analyze/download handlers without network I/O.
 
 ## Toggle
 
-The settings panel carries a resident 业务入口 section in its nav (desktop only): it writes `~/.dsh/plugin-settings.json` and hot-reloads the sidebar group without a restart. The section is shell-owned, so it stays visible even while the plugin is hidden.
+The settings panel carries a resident 业务入口 section in its nav (desktop only): it writes `~/.dsh/plugin-settings.json` and hot-reloads the slim sidebar control without a restart. The section is shell-owned, so it stays visible even while the control is hidden.
 
-The state file only gates the sidebar registration — the plugin itself always mounts, which is what keeps the toggle working live. Hand-editing that JSON has the same effect as using the switch.
+The state file only gates the sidebar registration — the workbench panel itself always mounts.
 
 ## File layout
 
 ```
 business-entry/
-├── package.json          # package metadata + dsh.bundle/client declarations
-├── cordis.patch.yml      # cordis composition-tree injection
-├── build.mjs             # esbuild build script
+├── package.json
+├── cordis.patch.yml
+├── build.mjs
 ├── src/
-│   ├── client.jsx        # browser-side root component + plugin contract
-│   ├── entries.js        # business-entry catalog (ids, labels, prompt keys, dots)
-│   ├── locales.js        # English and Chinese dictionaries, incl. every instruction
-│   ├── stores.js         # viewing-store factory (disclosure, selection, launch status)
-│   ├── styles.js         # CSS class names + stylesheet
-│   └── index.js          # empty host-side entry
+│   ├── client.jsx          # panel + slim sidebar + launch
+│   ├── WorkbenchPage.jsx   # form home and run cards
+│   ├── DailyReportPage.jsx # daily report: sources then generate
+│   ├── VideoDownloadPage.jsx # direct media download (no chat)
+│   ├── data-sources.js     # source catalog helpers
+│   ├── video-routes.js     # Host Fetch helpers
+│   ├── video-history.js    # local download history
+│   ├── entries.js          # task catalog
+│   ├── forms.js            # field map + composePrompt
+│   ├── locales.js          # dictionaries and prompt templates
+│   ├── stores.js           # viewing store
+│   ├── styles.js           # CSS
+│   └── index.js            # Host Fetch routes for video download
 ├── tests/
-│   └── launch.test.mjs   # click-to-launch behavior over the built bundle
-└── lib/                  # build output
-    ├── client.js         # browser bundle
-    └── index.js          # host entry
+│   ├── launch.test.mjs
+│   └── video-routes.test.mjs
+└── lib/
+    ├── client.js
+    └── index.js
 ```

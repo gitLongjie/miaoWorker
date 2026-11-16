@@ -2,21 +2,32 @@
 
 [English](README.md) | 中文
 
-DeepSeek Harness 侧边栏的业务入口分组插件：把部署自有的任务条目（日报、选题、速览等）作为一个可折叠分组渲染在工作区区域下方。每一行都不是书签——点击即在新的 Agent 会话里跑这个任务。
+DeepSeek Harness 的业务工作台插件：以无聊天主面板（`business-workbench`）为首页，部署自有任务（日报、选题、速览等）通过表单启动。提交后合成指令并在 Agent 会话中运行，但**不**切入 Conversation；运行卡片留在工作台，**查看会话**才进入聊天。
+
+## 冷启动
+
+插件在 apply 时调用 `uiWorkspace.setStartupBind('none')`，避免冷启动绑定空白会话，并在 Workspace / Session 目录就绪且当前没有非空白会话时选中 `business-workbench`。若已保存非空白会话，仍恢复 Conversation。
 
 ## 任务启动
 
-每一行都是一个「有固定会话的常驻任务」：
+1. 点选任务卡片并填写必填项（文案与 `prompt.*` 模板同在 `src/locales.js`）。
+2. **开始任务** 打开目标工作区的 New Session（新建或复用），以 `panel: 'preserve'` 绑定会话，把合成后的指令作为首条用户消息，并用条目标签命名会话以便列出历次运行。
+3. 工作台保持可见。该入口的历次运行以卡片展示；**查看会话** 调用 `openSession` 并切入 Conversation。
+4. **新开一次** 总会再开一个同标签会话；此前运行仍留在列表中。
 
-1. 点击一行会打开该入口已经拥有的会话——标签标题下、未归档、最近更新的那个 Session；这个标题正是插件启动任务时写入的。因此回到某个任务，就是回到它的对话、产物和历史。
-2. 某个入口的第一次点击还没有这个会话：它解析目标工作区——优先当前打开会话所属的工作区，其次最近活跃的工作区——并打开它的 New Session（新建或复用，与侧边栏 New Session 控件走同一条导航）。若尚未注册任何工作区，则直接创建会话。
-3. 该会话把条目的指令（`src/locales.js` 里的 `prompt.<id>`，与行标签相邻、同样由语言包拥有）作为第一条用户消息收下，并以条目标签命名——第 1 步正是靠它再找回来。
+### 今日选题 / 视频脚本 / 一稿多形态
 
-Ctrl/⌘/Alt+点击 = 这一次要新开一个。它会新建会话，绝不删除、替换或改名旧的那个：此前每一次运行都留在所属工作区的会话列表里，标题就是该条目标签，完整对话都在。
+「目标平台」由插件提供固定选项（微信公众号、微博、小红书、抖音、视频号、B站），表单为多选芯片，不接受自由填写。今日选题只选平台；关注领域与账号定位不再收集，指令要求 Agent 自行联网抓取所选平台过去 24 小时热点后再出选题。一稿多形态收集原始稿件与目标平台，仅为已勾选平台各产出一份适配形态。
 
-每一行还会列出它自己的历次运行：行上的数字展开该入口过去的会话，按时间倒序，进行中的会标注，当前工作区正打开的那个会高亮。点其中任意一条即打开它；列表第一项是「新开一个会话」——与在行上 Ctrl/⌘/Alt+点击等价。启动永远不会删除任何东西，所以此前那次运行既留在这个列表里，也留在所属工作区的会话列表里。
+### 今日数据日报
 
-每条指令都以「先向我确认所需输入」开场——数据来源、监测对象、素材——因为一次点击本身不提供任何输入。启动期间所有行都禁用；启动被拒时在列表下方给出原因，点击该提示即可关闭。
+日报页维护浏览器本地的**数据源**目录（`dsh.business.data-sources.v1`）：先添加命名数据源（粘贴 / 文件说明 / 已接入系统），生成日报时再选日期区间、平台，并勾选已有数据源。不再每次手填「数据来源」。
+
+### 视频下载
+
+「视频下载」卡片走 **Host 直连**（`kind: 'direct'`），**不**启动 Agent 会话。界面请求 `/api/business/video/analyze` 与 `/api/business/video/download`（由本插件 Host 入口注册）。文件写入 `$DSH_HOME/business-downloads`。请粘贴 **直链** 媒体地址（mp4 / m3u8 / m4s 等）；v1 不解析分享页。需要同级的 `dsh-video-downloader` Host bundle 已挂载（Desktop 会 stage 并可自动注入）。
+
+侧栏 `sidebar.business` 仅保留「打开工作台」控件。设置里的开关仍控制该控件显隐；panellist 首页始终可用。
 
 ## 安装
 
@@ -35,34 +46,42 @@ node build.mjs
 
 ```bash
 cd business-entry
-node build.mjs && node --test tests/launch.test.mjs
+node build.mjs && node --test tests/*.test.mjs
 ```
 
-`tests/launch.test.mjs` 用仿造的模块表与插槽注册表驱动构建产物：点击一行并断言发出的指令、会话标题、无工作区时的回退路径，以及分组报告出来的失败。
+`tests/launch.test.mjs` 通过假模块表与 slot 注册驱动构建产物：提交表单并断言合成指令、`panel: 'preserve'`、提交不揭示聊天，以及查看会话才揭示。`tests/video-routes.test.mjs` 覆盖 Host 下载路径沙箱与 analyze/download 处理（无真实网络）。
 
 ## 开关
 
-设置面板左侧导航里有常驻的「业务入口」分区（仅桌面端）：它写入 `~/.dsh/plugin-settings.json` 并热重载侧边栏分组，无需重启。分区由壳层拥有，插件被隐藏时也始终可见。
+设置页导航中有常驻的「业务入口」分区（仅 desktop）：写入 `~/.dsh/plugin-settings.json` 并热重载侧栏控件，无需重启。该分区由壳层持有，控件隐藏时仍可见。
 
-该状态文件只控制侧边栏注册——插件本身始终挂载，这正是开关能实时生效的原因。手工编辑这个 JSON 与使用开关效果相同。
+状态文件只门控侧栏注册——工作台主面板始终挂载。
 
-## 文件结构
+## 文件布局
 
 ```
 business-entry/
-├── package.json          # package metadata + dsh.bundle/client declarations
-├── cordis.patch.yml      # cordis composition-tree injection
-├── build.mjs             # esbuild build script
+├── package.json
+├── cordis.patch.yml
+├── build.mjs
 ├── src/
-│   ├── client.jsx        # browser-side root component + plugin contract
-│   ├── entries.js        # business-entry catalog (ids, labels, prompt keys, dots)
-│   ├── locales.js        # English and Chinese dictionaries, incl. every instruction
-│   ├── stores.js         # viewing-store factory (disclosure, selection, launch status)
-│   ├── styles.js         # CSS class names + stylesheet
-│   └── index.js          # empty host-side entry
+│   ├── client.jsx          # 面板 + 精简侧栏 + 启动
+│   ├── WorkbenchPage.jsx   # 表单首页与运行卡片
+│   ├── DailyReportPage.jsx # 日报：先数据源再生成
+│   ├── VideoDownloadPage.jsx # 直连媒体下载（无聊天）
+│   ├── data-sources.js     # 数据源目录辅助
+│   ├── video-routes.js     # Host Fetch 辅助
+│   ├── video-history.js    # 本机下载记录
+│   ├── entries.js          # 任务目录
+│   ├── forms.js            # 字段表 + composePrompt
+│   ├── locales.js          # 文案与 prompt 模板
+│   ├── stores.js           # 视图状态
+│   ├── styles.js           # CSS
+│   └── index.js            # 视频下载 Host Fetch 路由
 ├── tests/
-│   └── launch.test.mjs   # click-to-launch behavior over the built bundle
-└── lib/                  # build output
-    ├── client.js         # browser bundle
-    └── index.js          # host entry
+│   ├── launch.test.mjs
+│   └── video-routes.test.mjs
+└── lib/
+    ├── client.js
+    └── index.js
 ```

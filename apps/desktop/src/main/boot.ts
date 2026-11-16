@@ -467,6 +467,16 @@ export async function runDesktopBoot(options: DesktopBootOptions): Promise<Deskt
   )
   if (businessEntryPatch !== undefined) overlays.push(...businessEntryPatch)
 
+  // Same preinstall injection for the media downloader Host bundle so Agent
+  // tools and the business-entry Fetch routes can resolve `dsh-video-downloader`.
+  const composedBeforeVideo = [...bundlePatches, ...profile.patches, ...homePatches, ...overlays]
+  const videoDownloaderPatch = resolveOptionalBundlePatch(
+    INSTALL_ANCHOR,
+    'dsh-video-downloader',
+    composedBeforeVideo,
+  )
+  if (videoDownloaderPatch !== undefined) overlays.push(...videoDownloaderPatch)
+
   const app: { current?: Context } = {}
   const shutdown = createProcessShutdown(
     async () => { await app.current?.fiber.dispose() },
