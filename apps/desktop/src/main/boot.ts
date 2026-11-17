@@ -467,15 +467,11 @@ export async function runDesktopBoot(options: DesktopBootOptions): Promise<Deskt
   )
   if (businessEntryPatch !== undefined) overlays.push(...businessEntryPatch)
 
-  // Same preinstall injection for the media downloader Host bundle so Agent
-  // tools and the business-entry Fetch routes can resolve `dsh-video-downloader`.
-  const composedBeforeVideo = [...bundlePatches, ...profile.patches, ...homePatches, ...overlays]
-  const videoDownloaderPatch = resolveOptionalBundlePatch(
-    INSTALL_ANCHOR,
-    'dsh-video-downloader',
-    composedBeforeVideo,
-  )
-  if (videoDownloaderPatch !== undefined) overlays.push(...videoDownloaderPatch)
+  // Do not inject `dsh-video-downloader` here. Its Host entry injects `tools`,
+  // and a root-plane insert waits for that service across the whole Desktop
+  // boot — hanging the packaged smoke before any verdict is written. The
+  // workbench Fetch routes load the package through dynamic `import()`; Agent
+  // tools belong in an agent-preset row, not this host overlay.
 
   const app: { current?: Context } = {}
   const shutdown = createProcessShutdown(

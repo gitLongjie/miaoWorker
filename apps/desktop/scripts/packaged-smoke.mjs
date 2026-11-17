@@ -107,8 +107,11 @@ function copyOutsideRepo(executable, copyRoot) {
 
 /** Build the isolated launch environment: its own userData, DSH home, and result sinks. */
 export function smokeEnvironment(runDir, extra = {}) {
+  // Packaged Electron rejects most NODE_OPTIONS and must not inherit CI heap
+  // flags (or NODE_PATH) from the packaging job that launched this smoke.
+  const { NODE_OPTIONS: _nodeOptions, NODE_PATH: _nodePath, ...safeEnv } = process.env
   return {
-    ...process.env,
+    ...safeEnv,
     DSH_PACKAGED_SMOKE: '1',
     DSH_PACKAGED_SMOKE_USER_DATA: join(runDir, 'userdata'),
     DSH_PACKAGED_SMOKE_RESULT: join(runDir, 'smoke-result.json'),
