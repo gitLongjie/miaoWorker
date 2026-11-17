@@ -469,12 +469,13 @@ export async function runDesktopBoot(options: DesktopBootOptions): Promise<Deskt
 
   // Do not inject `dsh-video-downloader` here. Its Host entry injects `tools`,
   // and a root-plane insert waits for that service across the whole Desktop
-  // boot — hanging the packaged smoke before any verdict is written. Keep it
-  // as a plain library for dynamic `import()` from connection-scoped Fetch
-  // routes; Agent tools belong in an agent-preset row, not this host overlay.
-  // The business-entry Host entry must likewise stay inject-free on this
-  // overlay (empty `apply`): nested `ctx.inject(['connection'])` still hung
-  // Desktop publish #23 the same way.
+  // boot. Keep it as a plain library for dynamic `import()` from
+  // connection-scoped Fetch routes; Agent tools belong in an agent-preset
+  // row, not this host overlay. The business-entry Host entry must likewise
+  // stay inject-free on this overlay (empty `apply`): nested
+  // `ctx.inject(['connection'])` hung Desktop publish #23 the same way.
+  // Packaged smoke #21–#24 also deadlocked when spawnSync piped the child's
+  // stdio; `packaged-smoke.mjs` now inherits those streams.
 
   const app: { current?: Context } = {}
   const shutdown = createProcessShutdown(

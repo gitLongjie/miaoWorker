@@ -168,20 +168,27 @@ function rebuildShell(win?: BrowserWindow): void {
 }
 
 /**
+ * Append a startup line to the desktop log under userData without touching
+ * stdout/stderr. Packaged smoke previously piped those streams through
+ * spawnSync; a write that blocked on a full pipe never reached the file.
+ */
+function logFileOnly(line: string): void {
+  try {
+    const logPath = process.env.DSH_DESKTOP_LOG ?? join(app.getPath('userData'), 'desktop.log')
+    mkdirSync(dirname(logPath), { recursive: true })
+    appendFileSync(logPath, `${new Date().toISOString()} ${line}\n`)
+  } catch {
+    // Logging must never crash startup.
+  }
+}
+
+/**
  * Append a startup line to the desktop log under userData; GUI apps do not
  * surface process stderr, so failures need a durable sink for diagnosis.
  */
 function log(line: string): void {
-  const text = `${new Date().toISOString()} ${line}\n`
-  console.error(text.trimEnd())
-  try {
-    // DSH_DESKTOP_LOG overrides the default userData log for headless diagnosis.
-    const logPath = process.env.DSH_DESKTOP_LOG ?? join(app.getPath('userData'), 'desktop.log')
-    mkdirSync(dirname(logPath), { recursive: true })
-    appendFileSync(logPath, text)
-  } catch {
-    // Logging must never crash startup.
-  }
+  logFileOnly(line)
+  console.error(`${new Date().toISOString()} ${line}`)
 }
 
 /**
@@ -216,6 +223,8 @@ function mirrorConsoleToLog(): void {
  */
 async function main(): Promise<void> {
   try {
+    // File-only so a blocked console pipe cannot erase the first breadcrumb.
+    logFileOnly(`desktop: main entered (packaged=${String(app.isPackaged)})`)
     // Fail loud before anything mounts: a package missing boot-critical on-disk
     // resources (web dist, presets, unpacked twins) must not half-work.
     if (app.isPackaged) {

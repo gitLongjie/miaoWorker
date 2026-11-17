@@ -64,9 +64,6 @@ export const ASAR_UNPACK_GLOBS: readonly string[] = [
   // hands out, needs the unpacked twin.
   '**/node_modules/@deepseek-ai/**',
   '**/node_modules/@xmanrui/**',
-  // Bare OEM Host plugin (not under @xmanrui); Host tool runners and Fetch
-  // routes resolve it beside the asar twin the same way as scoped OEM plugins.
-  '**/node_modules/dsh-video-downloader/**',
 ]
 
 /** Stable id of one boot-critical packaged resource, localized in desktop/locales. */

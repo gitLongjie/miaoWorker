@@ -138,10 +138,14 @@ async function main() {
   console.log(`Smoke target: ${smokeTarget.executable}`)
   const runDir = mkdtempSync(join(tmpdir(), 'dsh-desktop-smoke-'))
   const launchArgs = process.platform === 'linux' ? ['--no-sandbox'] : []
+  // Inherit stdio so Electron/Cordis diagnostics stream live into the CI log.
+  // Piping stdout/stderr through spawnSync buffers until exit: a chatty boot
+  // can fill the OS pipe and block the child on its next write — the failure
+  // mode behind Desktop publish #21–#24 (ETIMEDOUT, empty desktop.log).
   const result = spawnSync(smokeTarget.executable, launchArgs, {
     timeout: smokeTimeoutMs,
-    encoding: 'utf8',
     env: smokeEnvironment(runDir),
+    stdio: 'inherit',
   })
   if (outsideCopyRoot !== null) rmSync(smokeTarget.root, { recursive: true, force: true })
   const logText = existsSync(join(runDir, 'desktop.log'))
@@ -171,9 +175,9 @@ async function main() {
     if (logText !== '') {
       console.error(`\n--- desktop.log (${join(runDir, 'desktop.log')}) ---`)
       console.error(logText.trimEnd())
+    } else {
+      console.error(`\n--- desktop.log missing at ${join(runDir, 'desktop.log')} ---`)
     }
-    if (result.stdout !== '') console.error(`\n--- stdout ---\n${result.stdout.trimEnd()}`)
-    if (result.stderr !== '') console.error(`\n--- stderr ---\n${result.stderr.trimEnd()}`)
     console.error(`run directory kept for diagnosis: ${runDir}`)
     process.exit(1)
   }

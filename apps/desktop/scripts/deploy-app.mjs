@@ -117,7 +117,7 @@ const videoDownloaderStage = resolve(root, 'dist', 'dsh-video-downloader-package
 cpSync(videoDownloaderRoot, videoDownloaderStage, {
   recursive: true,
   filter: (source) => source === videoDownloaderRoot
-    || /(?:[\\/](?:src|package\.json|cordis\.patch\.yml))(?:$|[\\/])/.test(source),
+    || /(?:[\\/](?:src|package\.json))(?:$|[\\/])/.test(source),
 })
 // 3. Package from apps/desktop itself. electron-builder follows the pnpm
 // workspace symlinks in node_modules, excludes devDependencies by the manifest,
