@@ -469,11 +469,12 @@ export async function runDesktopBoot(options: DesktopBootOptions): Promise<Deskt
 
   // Do not inject `dsh-video-downloader` here. Its Host entry injects `tools`,
   // and a root-plane insert waits for that service across the whole Desktop
-  // boot — hanging the packaged smoke before any verdict is written. The
-  // workbench Fetch routes load the package through dynamic `import()`; Agent
-  // tools belong in an agent-preset row, not this host overlay. The
-  // business-entry Host entry above likewise must not declare a package-level
-  // `inject: ['connection']` — same hang class when mounted from this overlay.
+  // boot — hanging the packaged smoke before any verdict is written. Keep it
+  // as a plain library for dynamic `import()` from connection-scoped Fetch
+  // routes; Agent tools belong in an agent-preset row, not this host overlay.
+  // The business-entry Host entry must likewise stay inject-free on this
+  // overlay (empty `apply`): nested `ctx.inject(['connection'])` still hung
+  // Desktop publish #23 the same way.
 
   const app: { current?: Context } = {}
   const shutdown = createProcessShutdown(
