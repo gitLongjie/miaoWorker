@@ -1,0 +1,77 @@
+name: Package Desktop · Hosted · Unsigned
+
+# Unsigned installers on GitHub-hosted runners for forks without the upstream
+# self-hosted packaging machines (dsh-win-package-trial / dsh-mac-package-trial).
+# Produces NSIS / DMG artifacts only; not signed, notarized, or update-qualified.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-package-hosted-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+          # Intel hosted pool: deploy-app cross-compiles both macOS architectures.
+          - name: macos-universal-from-intel
+            os: macos-15-intel
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install (immutable)
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Build host libs
+        run: pnpm build:lib
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Build native system bindings (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          NARB_ARCH=arm64 pnpm --dir native/system run build:native
+          NARB_ARCH=x64 pnpm --dir native/system run build:native
+
+      - name: Package unsigned installers
+        shell: bash
+        run: pnpm --filter @deepseek-ai/dsh-desktop run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          NODE_OPTIONS: --max-old-space-size=4096
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/desktop/dist-electron/*.exe
+            apps/desktop/dist-electron/*.dmg
+            apps/desktop/dist-electron/*.zip
+            apps/desktop/dist-electron/*.blockmap
+            apps/desktop/dist-electron/*.yml
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
