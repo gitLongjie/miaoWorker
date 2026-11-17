@@ -471,7 +471,9 @@ export async function runDesktopBoot(options: DesktopBootOptions): Promise<Deskt
   // and a root-plane insert waits for that service across the whole Desktop
   // boot — hanging the packaged smoke before any verdict is written. The
   // workbench Fetch routes load the package through dynamic `import()`; Agent
-  // tools belong in an agent-preset row, not this host overlay.
+  // tools belong in an agent-preset row, not this host overlay. The
+  // business-entry Host entry above likewise must not declare a package-level
+  // `inject: ['connection']` — same hang class when mounted from this overlay.
 
   const app: { current?: Context } = {}
   const shutdown = createProcessShutdown(
