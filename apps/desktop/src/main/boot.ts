@@ -453,29 +453,12 @@ export async function runDesktopBoot(options: DesktopBootOptions): Promise<Deskt
   const telemetryPatch = resolveTelemetryPatch(process.env.DSH_TELEMETRY_DISABLED, rows.has(TELEMETRY_ROW_ID))
   if (telemetryPatch !== undefined) overlays.push(telemetryPatch)
 
-  // The business-entry sidebar plugin ships inside app.asar but is not part of
-  // the web profile template's bundles list. If its package is resolvable from
-  // the installation anchor, inject its cordis patch so the Loader mounts it
-  // without requiring the user to edit the profile manifest — unless a patch
-  // layer composed above already configures the same plugin id (a machine that
-  // deployed the plugin before this injection shipped, or disabled it in the
-  // home patch); then the existing configuration wins.
-  const businessEntryPatch = resolveOptionalBundlePatch(
-    INSTALL_ANCHOR,
-    '@xmanrui/dsh-business-entry',
-    [...bundlePatches, ...profile.patches, ...homePatches],
-  )
-  if (businessEntryPatch !== undefined) overlays.push(...businessEntryPatch)
-
-  // Do not inject `dsh-video-downloader` here. Its Host entry injects `tools`,
-  // and a root-plane insert waits for that service across the whole Desktop
-  // boot. Keep it as a plain library for dynamic `import()` from
-  // connection-scoped Fetch routes; Agent tools belong in an agent-preset
-  // row, not this host overlay. The business-entry Host entry must likewise
-  // stay inject-free on this overlay (empty `apply`): nested
-  // `ctx.inject(['connection'])` hung Desktop publish #23 the same way.
-  // Packaged smoke #21–#24 also deadlocked when spawnSync piped the child's
-  // stdio; `packaged-smoke.mjs` now inherits those streams.
+  // Do not auto-inject `@xmanrui/dsh-business-entry` or `dsh-video-downloader`
+  // on this overlay. Shipping them into the packaged closure (#21–#25) left
+  // packaged smoke hung before any `desktop.log` line on both Windows and
+  // macOS; last green Desktop publish (#20) did not stage those packages.
+  // Keep `resolveOptionalBundlePatch` for other optional OEM bundles; remount
+  // the workbench only after a connection-scoped path is proven under smoke.
 
   const app: { current?: Context } = {}
   const shutdown = createProcessShutdown(

@@ -8,9 +8,8 @@
  * missing feature or an `agent-preset/invalid` refusal when that preset mounts.
  *
  * Exemptions: rows disabled in a patch (the shipped disabled `ui-schedule`
- * pair) and the OEM file: plugins (`@xmanrui/dsh-im`,
- * `@xmanrui/dsh-business-entry`, `dsh-video-downloader`) that ship through the
- * Desktop dependency closure and are also staged by `deploy-app.mjs`. Preset
+ * pair) and the OEM file: plugin (`@xmanrui/dsh-im`) that ships through the
+ * Desktop dependency closure and is also staged by `deploy-app.mjs`. Preset
  * rows with `disabled: !!js` stay required: the expression can enable them at runtime.
  * @module scripts/verify-desktop-dependencies
  */
@@ -37,8 +36,6 @@ const AGENT_PRESETS_ROOT = 'apps/desktop/config/agent-presets'
  */
 const STAGED_EXEMPTIONS = new Set<string>([
   '@xmanrui/dsh-im',
-  '@xmanrui/dsh-business-entry',
-  'dsh-video-downloader',
 ])
 
 /** Rows listing `disabled: true` within this many lines after `- name:` never load. */

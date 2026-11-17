@@ -19,18 +19,6 @@ const plugins = [
     build: ['npm', ['run', 'build']],
     artifact: 'lib/index.js',
   },
-  {
-    name: '@xmanrui/dsh-business-entry',
-    root: resolve(repoRoot, 'business-entry'),
-    build: ['node', ['build.mjs']],
-    artifact: 'lib/index.js',
-  },
-  {
-    name: 'dsh-video-downloader',
-    root: resolve(repoRoot, 'dsh-video-downloader'),
-    build: undefined,
-    artifact: 'src/index.js',
-  },
 ]
 
 function run(cmd, args, cwd) {

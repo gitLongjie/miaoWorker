@@ -19,8 +19,6 @@ import {
 const root = fileURLToPath(new URL('../', import.meta.url))
 const repoRoot = resolve(root, '../..')
 const dshImRoot = resolve(repoRoot, 'dsh-im', 'dsh-im-main')
-const businessEntryRoot = resolve(repoRoot, 'business-entry')
-const videoDownloaderRoot = resolve(repoRoot, 'dsh-video-downloader')
 const { productName, updateUrl, knowledgeBase, gatewayProviderName, helpDocsUrl } = readDesktopOemConfig(repoRoot)
 // pnpm 11's deps-status check aborts in a non-interactive shell unless CI is
 // set; stamp it so every pnpm invocation here inherits it.
@@ -74,11 +72,9 @@ run('pnpm', ['--filter', '@deepseek-ai/dsh-web-frontend', 'exec', 'vite', 'build
 })
 syncDesktopOemIcons(repoRoot, root)
 // 2. Build the main process and the render transport.
-// dsh-im and business-entry are workspace plugin packages whose runtime lib/ is
-// generated and absent from a clean GitHub checkout, so build them explicitly
-// through their workspace installs before staging them for electron-builder.
+// dsh-im is a workspace plugin package whose runtime lib/ is generated and
+// absent from a clean GitHub checkout, so build it explicitly before staging.
 run('pnpm', ['--dir', dshImRoot, 'run', 'build'])
-run('pnpm', ['--dir', businessEntryRoot, 'run', 'build'])
 run('pnpm', ['build:main'], { cwd: root })
 run('node', ['scripts/build-render-transport.mjs'], { cwd: root })
 // The built module is the asar-unpack manifest's single source of truth, shared
@@ -104,20 +100,6 @@ cpSync(dshImRoot, dshImStage, {
   recursive: true,
   filter: (source) => source === dshImRoot
     || /(?:[\\/](?:lib|package\.json|cordis\.patch\.yml))(?:$|[\\/])/.test(source),
-})
-// Stage the business-entry plugin for electron-builder.
-const businessEntryStage = resolve(root, 'dist', 'business-entry-package')
-cpSync(businessEntryRoot, businessEntryStage, {
-  recursive: true,
-  filter: (source) => source === businessEntryRoot
-    || /(?:[\\/](?:lib|package\.json|cordis\.patch\.yml))(?:$|[\\/])/.test(source),
-})
-// Stage the media downloader (pure ESM, no build) for electron-builder.
-const videoDownloaderStage = resolve(root, 'dist', 'dsh-video-downloader-package')
-cpSync(videoDownloaderRoot, videoDownloaderStage, {
-  recursive: true,
-  filter: (source) => source === videoDownloaderRoot
-    || /(?:[\\/](?:src|package\.json))(?:$|[\\/])/.test(source),
 })
 // 3. Package from apps/desktop itself. electron-builder follows the pnpm
 // workspace symlinks in node_modules, excludes devDependencies by the manifest,
