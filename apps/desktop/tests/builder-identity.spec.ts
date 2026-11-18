@@ -66,6 +66,12 @@ describe('desktop builder identity', () => {
     expect(config).not.toContain('${productName}-${version}')
   })
 
+  it('publishes GitHub Release assets to this repository', () => {
+    expect(config).toMatch(/^publish:\s*$[\s\S]*?^\s+owner:\s+gitLongjie\s*$/m)
+    expect(config).toMatch(/^publish:\s*$[\s\S]*?^\s+repo:\s+miaoWorker\s*$/m)
+    expect(config).not.toMatch(/^publish:\s*$[\s\S]*?^\s+repo:\s+deepseek-harness\s*$/m)
+  })
+
   it('installs per-machine under the stable ASCII miaoWorker directory', () => {
     expect(config).toMatch(/^  perMachine: true\s*$/m)
     expect(config).toMatch(/^  include: build\/installer\.nsh\s*$/m)

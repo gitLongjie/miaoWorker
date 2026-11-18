@@ -6,8 +6,8 @@ name: Desktop publish
 # currently the geo CDN feed — so this release is the bootstrap distribution
 # and must be re-uploaded to that CDN path per release (latest.yml names its
 # artifacts relatively).
-# electron-builder --publish always targets the deepseek-harness repo declared
-# in electron-builder.yml and writes with the built-in GITHUB_TOKEN.
+# electron-builder --publish always targets the miaoWorker repo declared in
+# electron-builder.yml and writes with the built-in GITHUB_TOKEN.
 # Triggered by a v* tag or manually. Signing/notarization secrets are left
 # empty for now (CSC_IDENTITY_AUTO_DISCOVERY false), so builds are unsigned
 # until certificates are configured.
@@ -174,3 +174,43 @@ jobs:
           path: apps/desktop/dist-electron/**/*
           if-no-files-found: error
           retention-days: 7
+
+  # electron-builder can exit 0 while writing zero assets when its publish
+  # target disagrees with the release create-release just opened (seen on
+  # Desktop publish #26). Fail the workflow before anyone treats a green run
+  # as a downloadable installer.
+  verify-release-assets:
+    name: Verify release assets
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Require installer assets on the GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(node -p "require('./apps/desktop/package.json').version")"
+          echo "TAG=$TAG"
+          curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            | TAG="$TAG" node -e "
+              const d = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+              if (!Array.isArray(d.assets)) {
+                console.error('release lookup failed', d);
+                process.exit(2);
+              }
+              const names = d.assets.map((a) => a.name);
+              console.log(names.join('\\n') || '(no assets)');
+              const hasWin = names.some((n) => /\\.exe$/i.test(n));
+              const hasMac = names.some((n) => /\\.(dmg|zip)$/i.test(n));
+              if (!hasWin || !hasMac) {
+                console.error(
+                  'expected Windows .exe and macOS .dmg/.zip on ' + process.env.TAG + '; got:',
+                  names,
+                );
+                process.exit(1);
+              }
+            "
