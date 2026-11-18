@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { FiberState, type Context } from '@deepseek-ai/cordis'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import type { EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
@@ -56,6 +56,42 @@ const PROFILE_ROOT_CONFIG = `# dsh profile root — an empty entry list. The tre
 
 /** The session-telemetry row id the DSH_TELEMETRY_DISABLED switch targets. */
 const TELEMETRY_ROW_ID = 'session-telemetry-otel'
+
+/** Loader id of the staged business workbench. */
+const SHIPPED_WORKBENCH_ID = 'xmanrui-dsh-business-entry'
+
+/**
+ * Mount the staged workbench from `oem/`, outside `node_modules`.
+ * Copying this plugin into the packaged `node_modules` tree hung Electron
+ * before `main` on Desktop publish #21–#25, so the installer never uploaded.
+ * A file URL loads the same empty Host entry only after the process is up.
+ * @param installAnchor - absolute path of the app package.json.
+ * @param alreadyConfigured - whether a composed patch already names this plugin id.
+ * @param entryExists - filesystem probe, replaced in tests.
+ * @returns the overlay insert, or `undefined` when the package is absent or already configured.
+ */
+export function shippedWorkbenchInsert(
+  installAnchor: string,
+  alreadyConfigured: boolean,
+  entryExists: (mainPath: string) => boolean = existsSync,
+): PatchOptions | undefined {
+  if (alreadyConfigured) return undefined
+  const mainPath = join(dirname(installAnchor), 'oem', 'dsh-business-entry', 'lib', 'index.js')
+  if (!entryExists(mainPath)) return undefined
+  return {
+    insert: [{
+      id: SHIPPED_WORKBENCH_ID,
+      name: pathToFileURL(mainPath).href,
+    }],
+  }
+}
+
+/** Whether any composed patch already names the shipped workbench id. */
+function workbenchAlreadyConfigured(patches: ReadonlyArray<PatchOptions>): boolean {
+  return patches.some(patch =>
+    patch.id === SHIPPED_WORKBENCH_ID
+    || (patch.insert?.some(row => row.id === SHIPPED_WORKBENCH_ID) ?? false))
+}
 
 /**
  * Whether this boot runs in an open checkout and must therefore ensure the
@@ -453,12 +489,12 @@ export async function runDesktopBoot(options: DesktopBootOptions): Promise<Deskt
   const telemetryPatch = resolveTelemetryPatch(process.env.DSH_TELEMETRY_DISABLED, rows.has(TELEMETRY_ROW_ID))
   if (telemetryPatch !== undefined) overlays.push(telemetryPatch)
 
-  // Do not auto-inject `@xmanrui/dsh-business-entry` or `dsh-video-downloader`
-  // on this overlay. Shipping them into the packaged closure (#21–#25) left
-  // packaged smoke hung before any `desktop.log` line on both Windows and
-  // macOS; last green Desktop publish (#20) did not stage those packages.
-  // Keep `resolveOptionalBundlePatch` for other optional OEM bundles; remount
-  // the workbench only after a connection-scoped path is proven under smoke.
+  // Stage lives under oem/, not node_modules. See shippedWorkbenchInsert.
+  const businessEntryPatch = shippedWorkbenchInsert(
+    INSTALL_ANCHOR,
+    workbenchAlreadyConfigured([...bundlePatches, ...profile.patches, ...homePatches]),
+  )
+  if (businessEntryPatch !== undefined) overlays.push(businessEntryPatch)
 
   const app: { current?: Context } = {}
   const shutdown = createProcessShutdown(

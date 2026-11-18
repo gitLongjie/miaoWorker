@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   createDesktopProfileContext,
@@ -12,6 +12,7 @@ import {
   resolveMarketAnchorPatch,
   resolveOptionalBundlePatch,
   resolveTelemetryPatch,
+  shippedWorkbenchInsert,
 } from '../src/main/boot.ts'
 
 describe('createDesktopProfileContext', () => {
@@ -77,6 +78,23 @@ describe('resolveMarketAnchorPatch', () => {
   it('hands the boot anchor to the market-local row', () => {
     expect(resolveMarketAnchorPatch(true, 'C:/app/package.json'))
       .toEqual({ id: 'market-local', config: { installAnchor: 'C:/app/package.json' } })
+  })
+})
+
+describe('shippedWorkbenchInsert', () => {
+  const anchor = 'C:/app/package.json'
+  const mainPath = join('C:/app', 'oem', 'dsh-business-entry', 'lib', 'index.js')
+
+  it('mounts the staged file when the oem tree is present', () => {
+    const patch = shippedWorkbenchInsert(anchor, false, candidate => candidate === mainPath)
+    expect(patch?.insert?.[0]?.id).toBe('xmanrui-dsh-business-entry')
+    expect(patch?.insert?.[0]?.name).toBe(pathToFileURL(mainPath).href)
+    expect(patch?.insert?.[0]?.name).not.toContain('node_modules')
+  })
+
+  it('skips when the tree is absent or a patch already names the plugin', () => {
+    expect(shippedWorkbenchInsert(anchor, false, () => false)).toBeUndefined()
+    expect(shippedWorkbenchInsert(anchor, true, () => true)).toBeUndefined()
   })
 })
 

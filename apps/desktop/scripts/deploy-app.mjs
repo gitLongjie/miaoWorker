@@ -19,6 +19,7 @@ import {
 const root = fileURLToPath(new URL('../', import.meta.url))
 const repoRoot = resolve(root, '../..')
 const dshImRoot = resolve(repoRoot, 'dsh-im', 'dsh-im-main')
+const businessEntryRoot = resolve(repoRoot, 'business-entry')
 const { productName, updateUrl, knowledgeBase, gatewayProviderName, helpDocsUrl } = readDesktopOemConfig(repoRoot)
 // pnpm 11's deps-status check aborts in a non-interactive shell unless CI is
 // set; stamp it so every pnpm invocation here inherits it.
@@ -72,9 +73,11 @@ run('pnpm', ['--filter', '@deepseek-ai/dsh-web-frontend', 'exec', 'vite', 'build
 })
 syncDesktopOemIcons(repoRoot, root)
 // 2. Build the main process and the render transport.
-// dsh-im is a workspace plugin package whose runtime lib/ is generated and
-// absent from a clean GitHub checkout, so build it explicitly before staging.
+// dsh-im and the business workbench are workspace plugin packages whose
+// runtime lib/ is generated and absent from a clean GitHub checkout, so build
+// them explicitly before staging.
 run('pnpm', ['--dir', dshImRoot, 'run', 'build'])
+run('pnpm', ['--dir', businessEntryRoot, 'run', 'build'])
 run('pnpm', ['build:main'], { cwd: root })
 run('node', ['scripts/build-render-transport.mjs'], { cwd: root })
 // The built module is the asar-unpack manifest's single source of truth, shared
@@ -93,14 +96,15 @@ const comfyDistDir = resolve(root, 'resources', 'comfyui-dist')
 const extraResources = existsSync(comfyDistDir)
   ? [{ from: comfyDistDir, to: 'comfyui-dist' }]
   : undefined
-// Stage the local file dependency after the TypeScript build (which clears
-// dist/) so electron-builder can include it in app.asar.
+// Stage local plugin packages after the TypeScript build (which clears dist/)
+// so electron-builder can include them in app.asar. electron-builder does not
+// follow the pnpm junction for these packages.
+const runtimeFilter = (sourceRoot) => (source) => source === sourceRoot
+  || /(?:[\\/](?:lib|package\.json|cordis\.patch\.yml))(?:$|[\\/])/.test(source)
 const dshImStage = resolve(root, 'dist', 'dsh-im-package')
-cpSync(dshImRoot, dshImStage, {
-  recursive: true,
-  filter: (source) => source === dshImRoot
-    || /(?:[\\/](?:lib|package\.json|cordis\.patch\.yml))(?:$|[\\/])/.test(source),
-})
+cpSync(dshImRoot, dshImStage, { recursive: true, filter: runtimeFilter(dshImRoot) })
+const businessEntryStage = resolve(root, 'dist', 'business-entry-package')
+cpSync(businessEntryRoot, businessEntryStage, { recursive: true, filter: runtimeFilter(businessEntryRoot) })
 // 3. Package from apps/desktop itself. electron-builder follows the pnpm
 // workspace symlinks in node_modules, excludes devDependencies by the manifest,
 // and emits installers to the configured output directory.
