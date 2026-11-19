@@ -295,7 +295,9 @@ async function main(): Promise<void> {
     // First-launch ComfyUI deployment runs beside the shell, never blocking it:
     // copying the bundled program tree takes minutes, the app works without it
     // (the remote MiniMax backend), and the module's own logging owns progress.
-    if (app.isPackaged) {
+    // Packaged smoke exits in this same turn, so the copy would still have the
+    // app directory open when the harness deletes it.
+    if (app.isPackaged && process.env.DSH_PACKAGED_SMOKE !== '1') {
       void deployBundledComfyUI({
         appRoot: app.getAppPath(),
         resourcesDir: process.resourcesPath,

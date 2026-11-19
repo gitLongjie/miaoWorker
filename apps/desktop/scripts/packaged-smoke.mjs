@@ -42,6 +42,31 @@ function runDeploy(deployArgs) {
   if (r.status !== 0) process.exit(r.status ?? 1)
 }
 
+/**
+ * Delete the outside-repo smoke copy. Windows keeps the executable mapped
+ * briefly after exit, and `rmSync` then throws `EPERM` before the installer
+ * upload. Retries cover that window. A copy that is still locked is reported
+ * and left in place: the verdict file and the release build do not read this
+ * directory.
+ * @param copyRoot - the temporary app copy.
+ * @param remove - directory removal; tests pass a stand-in.
+ */
+export function removeSmokeCopy(copyRoot, remove = defaultRemoveSmokeCopy) {
+  try {
+    remove(copyRoot)
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error
+      ? String(error.code)
+      : 'unknown'
+    console.error(`smoke copy cleanup failed (${code}); the verdict and publish do not use this directory: ${copyRoot}`)
+  }
+}
+
+/** Retry a Windows file lock, then surface any error that is still there. */
+function defaultRemoveSmokeCopy(copyRoot) {
+  rmSync(copyRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+}
+
 /** Locate the unpacked app executable electron-builder just produced. */
 export function findPackagedExecutable(platform = process.platform, root = outputRoot) {
   if (!existsSync(root)) {
@@ -147,7 +172,14 @@ async function main() {
     env: smokeEnvironment(runDir),
     stdio: 'inherit',
   })
-  if (outsideCopyRoot !== null) rmSync(smokeTarget.root, { recursive: true, force: true })
+  if (outsideCopyRoot !== null) {
+    // The main process has exited; a Windows helper can still have the
+    // executable mapped. Reap the tree before deleting the copy.
+    if (process.platform === 'win32' && result.pid !== undefined && result.pid > 0) {
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(result.pid)], { stdio: 'ignore' })
+    }
+    removeSmokeCopy(smokeTarget.root)
+  }
   const logText = existsSync(join(runDir, 'desktop.log'))
     ? readFileSync(join(runDir, 'desktop.log'), 'utf8')
     : ''
